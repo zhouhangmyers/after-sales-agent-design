@@ -1,10 +1,8 @@
 # Agent Orchestrator Platform
 
-Minimal Python agent runtime scaffold with validation, middleware, and tests.
+Minimal Python agent runtime scaffold with validation, middleware, examples, and tests.
 
-This repository is not a full agent platform yet. It is the smallest engineering skeleton you should understand before moving on to `FastAPI`, database persistence, streaming, workflow, and eval.
-
-If you want the long-form foundations tutorial, start with [WEEK1_TUTORIAL.md](./WEEK1_TUTORIAL.md).
+This repository is not a full agent platform yet. It focuses on a small but real runtime core you can run, inspect, test, and extend before moving on to `FastAPI`, database persistence, streaming, workflow, and eval.
 
 ## Environment Setup
 
@@ -66,7 +64,6 @@ The goal of this repository is not "learn all Python syntax". The goal is to und
 ```text
 agent-orchestrator-platform/
 ├── README.md
-├── WEEK1_TUTORIAL.md
 ├── pyproject.toml
 ├── examples/
 │   ├── 01_runtime_demo.py
@@ -105,7 +102,7 @@ Read them in this order:
 2. `examples/02_pydantic_validation_demo.py`
    This isolates one idea: what `model_validate(...)` actually does.
 3. `examples/03_asyncio_primer.py`
-   This is not yet the runtime implementation. It exists to build async intuition before Week 2 and later workflow work.
+   This is not yet the runtime implementation. It exists to build async intuition before the later backend and workflow stages.
 
 ### 2. Read `agent_runtime` in this order
 
@@ -173,7 +170,7 @@ This matters because the point here is engineering discipline, not only "it seem
 
 ### 5. Modify something small yourself
 
-Before moving to Week 2, do at least one small change:
+Before moving on, do at least one small change:
 
 - add one new tool
 - add one or two tests
@@ -252,7 +249,7 @@ Ten to twenty minutes of this is usually more valuable than mechanically rewriti
 
 ## Next Step
 
-Week 2 is:
+The next stage is to place this runtime inside a real backend skeleton:
 
 - `FastAPI`
 - `SQLAlchemy 2`
