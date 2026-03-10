@@ -1,0 +1,59 @@
+Metadata-Version: 2.4
+Name: agent-orchestrator-platform
+Version: 0.1.0
+Summary: Minimal agent runtime scaffold for the 12-week AI agent roadmap.
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: pydantic<3,>=2
+Provides-Extra: dev
+Requires-Dist: pytest<9,>=8; extra == "dev"
+Requires-Dist: ruff<1,>=0.9; extra == "dev"
+Requires-Dist: mypy<2,>=1.11; extra == "dev"
+
+# Agent Orchestrator Platform
+
+Week 1 scaffold for the 12-week Python AI Agent roadmap.
+
+Start here:
+
+- [WEEK1_TUTORIAL.md](/home/zhouhangmyers/python/agent-orchestrator-platform/WEEK1_TUTORIAL.md)
+
+Current Week 1 scope:
+
+- Minimal `agent_runtime` package
+- Tool registry
+- Pydantic argument validation
+- Unified error shape
+- Logging middleware
+- Runnable examples
+- Tests, lint, and type-check commands
+
+## Quick Start
+
+Use a project-local virtual environment:
+
+```bash
+cd /home/zhouhangmyers/python/agent-orchestrator-platform
+python3.12 -m venv .venv
+./.venv/bin/python -m pip install -e '.[dev]'
+```
+
+Run the examples:
+
+```bash
+./.venv/bin/python examples/01_runtime_demo.py
+./.venv/bin/python examples/02_pydantic_validation_demo.py
+./.venv/bin/python examples/03_asyncio_primer.py
+```
+
+Run the full Week 1 verification loop:
+
+```bash
+./.venv/bin/pytest -q
+./.venv/bin/ruff check .
+./.venv/bin/mypy src tests examples
+```
+
+Optional:
+
+- If you already have `uv`, you can use `uv sync --extra dev` and `uv run ...` instead of the `.venv` commands above.
