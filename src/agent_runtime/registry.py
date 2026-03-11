@@ -13,8 +13,10 @@ from pydantic import BaseModel
 # 接收一个经过 Pydantic 校验的参数模型对象，返回任意结果。
 ToolHandler = Callable[[BaseModel], Any]
 
-# dataclass 让这种“主要装数据的类”少写样板代码；
-# frozen=True 表示创建后字段不允许随便改，适合工具定义这类元信息对象。
+# 这里不用 BaseModel，是因为 ToolDefinition 不是“外部输入数据模型”，
+# 而是 runtime 内部保存的工具定义元信息；
+# 它主要只是装 name / description / args_model / handler 这几个程序对象，
+# 不需要 Pydantic 那套输入校验、类型转换、序列化能力。
 @dataclass(frozen=True)
 class ToolDefinition:
     # 工具名，例如 "add"。
