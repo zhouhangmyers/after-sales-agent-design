@@ -5,32 +5,43 @@ Summary: Minimal agent runtime scaffold for the 12-week AI agent roadmap.
 Requires-Python: >=3.12
 Description-Content-Type: text/markdown
 Requires-Dist: pydantic<3,>=2
+Requires-Dist: fastapi<1,>=0.115
+Requires-Dist: uvicorn<1,>=0.30
+Requires-Dist: sqlalchemy<3,>=2.0
+Requires-Dist: alembic<2,>=1.13
+Requires-Dist: psycopg[binary]<4,>=3.2
+Requires-Dist: redis<6,>=5
+Requires-Dist: sse-starlette<3,>=2
+Requires-Dist: python-dotenv<2,>=1
 Provides-Extra: dev
 Requires-Dist: pytest<9,>=8; extra == "dev"
+Requires-Dist: pytest-asyncio<1,>=0.24; extra == "dev"
+Requires-Dist: httpx<1,>=0.27; extra == "dev"
 Requires-Dist: ruff<1,>=0.9; extra == "dev"
 Requires-Dist: mypy<2,>=1.11; extra == "dev"
 
 # Agent Orchestrator Platform
 
-Week 1 scaffold for the 12-week Python AI Agent roadmap.
+Minimal Python agent backend scaffold for the 12-week AI agent roadmap.
 
-Start here:
+This repository now covers two layers:
 
-- [WEEK1_TUTORIAL.md](/home/zhouhangmyers/python/agent-orchestrator-platform/WEEK1_TUTORIAL.md)
+- Week 1: a small but real `agent_runtime` core
+- Week 2: a service shell with `FastAPI`, `SQLAlchemy`, persistence tables, and `SSE`
 
-Current Week 1 scope:
+It is still not a full agent platform yet, but it is no longer only a runtime demo. You can now run, inspect, test, and extend both the runtime core and the backend shell that will later host workflow, eval, approval, and coding-agent features.
 
-- Minimal `agent_runtime` package
-- Tool registry
-- Pydantic argument validation
-- Unified error shape
-- Logging middleware
-- Runnable examples
-- Tests, lint, and type-check commands
+## Environment Setup
 
-## Quick Start
+Use a project-local virtual environment first. This keeps the repository isolated.
 
-Use a project-local virtual environment:
+Prerequisites:
+
+- Python `3.12+`
+- A shell that can run local scripts
+- Optional: `uv` if you already use it
+
+Recommended setup:
 
 ```bash
 cd /home/zhouhangmyers/python/agent-orchestrator-platform
@@ -38,15 +49,27 @@ python3.12 -m venv .venv
 ./.venv/bin/python -m pip install -e '.[dev]'
 ```
 
-Run the examples:
+Optional `uv` setup:
 
 ```bash
-./.venv/bin/python examples/01_runtime_demo.py
-./.venv/bin/python examples/02_pydantic_validation_demo.py
-./.venv/bin/python examples/03_asyncio_primer.py
+cd /home/zhouhangmyers/python/agent-orchestrator-platform
+uv sync --extra dev
 ```
 
-Run the full Week 1 verification loop:
+Quick verification:
+
+```bash
+./.venv/bin/python -V
+./.venv/bin/pytest --version
+./.venv/bin/ruff --version
+./.venv/bin/mypy --version
+```
+
+## Week 2 Quick Start
+
+The backend shell can run locally with SQLite immediately, and it can also be pointed at PostgreSQL and Redis through environment variables later.
+
+Run the verification loop:
 
 ```bash
 ./.venv/bin/pytest -q
@@ -54,6 +77,279 @@ Run the full Week 1 verification loop:
 ./.venv/bin/mypy src tests examples
 ```
 
-Optional:
+Run the API server:
 
-- If you already have `uv`, you can use `uv sync --extra dev` and `uv run ...` instead of the `.venv` commands above.
+```bash
+AUTO_CREATE_SCHEMA=true ./.venv/bin/uvicorn agent_service.main:app --reload
+```
+
+Try the endpoints:
+
+```bash
+curl http://127.0.0.1:8000/healthz
+
+curl -X POST http://127.0.0.1:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"sess-001","message":"add a=3 b=7"}'
+
+curl -N "http://127.0.0.1:8000/api/v1/chat/stream?session_id=sess-002&message=add%20a=1%20b=2"
+```
+
+If you want PostgreSQL and Redis instead of SQLite, start the containers in [compose.yaml](/home/zhouhangmyers/python/agent-orchestrator-platform/compose.yaml) and copy settings from [.env.example](/home/zhouhangmyers/python/agent-orchestrator-platform/.env.example).
+
+## Current Scope
+
+This project currently covers:
+
+- Minimal `agent_runtime` package
+- Minimal `agent_service` package
+- Tool registry
+- Pydantic argument validation
+- Unified error shape
+- Logging middleware
+- FastAPI app bootstrap
+- SQLAlchemy models and repositories
+- Alembic migration scaffold
+- SSE event streaming
+- Runnable examples
+- Tests, lint, and type-check commands
+
+The goal of this repository is not "learn all Python syntax". The goal is to understand a small but real runtime skeleton:
+
+- how input enters the system
+- how tools are registered and executed
+- where validation happens
+- how errors are normalized
+- where middleware fits
+- how tests describe behavior
+
+## Project Layout
+
+```text
+agent-orchestrator-platform/
+├── README.md
+├── WEEK2_TUTORIAL.md
+├── .env.example
+├── alembic.ini
+├── compose.yaml
+├── pyproject.toml
+├── examples/
+│   ├── 01_runtime_demo.py
+│   ├── 02_pydantic_validation_demo.py
+│   └── 03_asyncio_primer.py
+├── migrations/
+│   ├── env.py
+│   └── versions/
+├── src/
+│   ├── agent_runtime/
+│   │   ├── __init__.py
+│   │   ├── errors.py
+│   │   ├── logging_middleware.py
+│   │   ├── models.py
+│   │   ├── registry.py
+│   │   └── runtime.py
+│   └── agent_service/
+│       ├── api/
+│       ├── db/
+│       ├── repositories/
+│       ├── schemas/
+│       ├── services/
+│       ├── config.py
+│       └── main.py
+└── tests/
+    ├── integration/
+    └── test_runtime.py
+```
+
+## Recommended Learning Order
+
+Do not start by reading every file line by line. This repository is much easier to absorb if you move from running -> observing -> reading -> testing -> modifying.
+
+### 1. Run the examples first
+
+Start here:
+
+```bash
+./.venv/bin/python examples/01_runtime_demo.py
+./.venv/bin/python examples/02_pydantic_validation_demo.py
+./.venv/bin/python examples/03_asyncio_primer.py
+```
+
+Read them in this order:
+
+1. `examples/01_runtime_demo.py`
+   This is the best high-level entry point. It shows tool registration, successful execution, validation failure, unknown tool failure, and logging.
+2. `examples/02_pydantic_validation_demo.py`
+   This isolates one idea: what `model_validate(...)` actually does.
+3. `examples/03_asyncio_primer.py`
+   This is not yet the runtime implementation. It exists to build async intuition before the later backend and workflow stages.
+
+### 2. Read `agent_runtime` in this order
+
+Recommended file order:
+
+1. `src/agent_runtime/models.py`
+   Start here because this file defines the input and output shapes: `ToolCall`, `ToolResult`, and `ErrorResponse`.
+2. `src/agent_runtime/errors.py`
+   Read this next so you know the three runtime error categories before reading the main flow.
+3. `src/agent_runtime/registry.py`
+   This shows how tools are stored, looked up, and listed.
+4. `src/agent_runtime/logging_middleware.py`
+   Read this before `runtime.py` so middleware stops feeling magical.
+5. `src/agent_runtime/runtime.py`
+   This is the core control flow: `execute -> _dispatch -> _invoke`.
+6. `src/agent_runtime/__init__.py`
+   Read this last. It just shows the public export surface.
+
+### 3. Use the tests as the behavior guide
+
+After you finish the first source pass, read:
+
+```bash
+./.venv/bin/pytest -q
+```
+
+Then open `tests/test_runtime.py`.
+
+Do not think of this file as "extra verification only". It is also the clearest behavior spec in the repo.
+
+Recommended test reading order:
+
+1. Registry basics
+   `test_registry_lists_registered_names`
+   `test_duplicate_registration_raises_value_error`
+2. Core runtime success and failure cases
+   `test_execute_success_returns_result`
+   `test_unknown_tool_returns_structured_error`
+   `test_validation_failure_returns_structured_error`
+   `test_execution_failure_returns_structured_error`
+3. Middleware behavior
+   `test_middleware_chain_runs_in_wrapped_order`
+   `test_middleware_can_modify_arguments_before_execution`
+4. Logging behavior
+   `test_logging_middleware_logs_start_and_finish`
+   `test_logging_middleware_logs_errors`
+5. Dependency injection
+   `test_runtime_accepts_custom_registry`
+
+When reading each test, ask:
+
+- what input is being created
+- which path in `runtime.py` it is trying to hit
+- what behavior the test is protecting
+
+### 4. Run the full verification loop
+
+```bash
+./.venv/bin/pytest -q
+./.venv/bin/ruff check .
+./.venv/bin/mypy src tests examples
+```
+
+This matters because the point here is engineering discipline, not only "it seems to work on my machine".
+
+### 5. Modify something small yourself
+
+Before moving on, do at least one small change:
+
+- add one new tool
+- add one or two tests
+- rerun the verification loop
+
+That is the moment where the project shifts from "I read it" to "I own it".
+
+## How To Think About Each Part
+
+If you only want the shortest mental model, keep this map in mind:
+
+- `models.py`
+  Defines the protocol between caller and runtime.
+- `errors.py`
+  Defines normalized failure categories.
+- `registry.py`
+  Holds available tools.
+- `logging_middleware.py`
+  Observes the request before and after execution.
+- `runtime.py`
+  Coordinates everything.
+- `examples/`
+  Show the runtime in action.
+- `tests/test_runtime.py`
+  Proves the behavior and edge cases.
+
+## The Main Control Flow
+
+The core chain for this repo is:
+
+```text
+execute()
+  -> build ToolCall
+  -> _dispatch()
+  -> middleware(s)
+  -> _invoke()
+  -> registry lookup
+  -> args_model.model_validate(...)
+  -> handler(...)
+  -> ToolResult
+```
+
+Failure also follows a consistent pattern:
+
+```text
+runtime raises structured runtime error
+  -> execute() catches AgentRuntimeError
+  -> returns ToolResult(success=False, error=...)
+```
+
+This is the main thing you should be able to explain from memory after finishing this foundations pass.
+
+## What "Foundations Complete" Looks Like
+
+You are ready to move on when you can do these things without guessing:
+
+- explain `ToolCall`, `ToolResult`, and `ErrorResponse`
+- explain the difference between `UnknownToolError`, `ToolValidationError`, and `ToolExecutionError`
+- explain why middleware wraps execution like an onion
+- explain why `execute()` returns a structured failure instead of leaking raw exceptions
+- run the examples and verification commands yourself
+- add a new tool and a test without getting lost
+
+## Suggested Daily Review Loop
+
+If you want a light review before starting each study session, do this instead of rereading the whole repo:
+
+1. say the main chain out loud:
+   `execute -> _dispatch -> _invoke -> validate -> handler -> ToolResult`
+2. open one example
+3. open one test
+4. open one source file
+5. explain what problem that file solves
+
+Ten to twenty minutes of this is usually more valuable than mechanically rewriting the same files every day.
+
+## Next Step
+
+The next stage after this Week 2 scaffold is to make the backend smarter rather than just bigger:
+
+- `Tool Calling`
+- `Structured Output`
+- `Workflow`
+- `Retry / Timeout`
+- `Prompt management`
+- `Eval`
+
+The goal is not to replace `agent_runtime`. The goal is to place this runtime inside a real backend skeleton.
+
+## Optional `uv` Commands
+
+If you prefer `uv`, these commands are equivalent:
+
+```bash
+uv sync --extra dev
+uv run python examples/01_runtime_demo.py
+uv run python examples/02_pydantic_validation_demo.py
+uv run python examples/03_asyncio_primer.py
+uv run pytest -q
+uv run ruff check .
+uv run mypy src tests examples
+```

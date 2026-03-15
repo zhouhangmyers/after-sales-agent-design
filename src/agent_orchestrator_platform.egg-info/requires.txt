@@ -1,6 +1,16 @@
 pydantic<3,>=2
+fastapi<1,>=0.115
+uvicorn<1,>=0.30
+sqlalchemy<3,>=2.0
+alembic<2,>=1.13
+psycopg[binary]<4,>=3.2
+redis<6,>=5
+sse-starlette<3,>=2
+python-dotenv<2,>=1
 
 [dev]
 pytest<9,>=8
+pytest-asyncio<1,>=0.24
+httpx<1,>=0.27
 ruff<1,>=0.9
 mypy<2,>=1.11

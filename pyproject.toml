@@ -9,21 +9,49 @@ description = "Minimal agent runtime scaffold for the 12-week AI agent roadmap."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    # 数据校验与请求/响应模型定义。
     "pydantic>=2,<3",
+    # Web API 框架，负责路由、依赖注入和接口定义。
+    "fastapi>=0.115,<1",
+    # ASGI 服务启动器，用来运行 FastAPI 应用。
+    "uvicorn>=0.30,<1",
+    # ORM 与 SQL 工具层，负责建模、查询和数据库会话管理。
+    "sqlalchemy>=2.0,<3",
+    # 数据库迁移工具，负责版本化管理表结构变更。
+    "alembic>=1.13,<2",
+    # PostgreSQL 驱动，项目切换到 Postgres 时通过它连接数据库。
+    "psycopg[binary]>=3.2,<4",
+    # Redis 客户端，用于事件缓存等可选能力。
+    "redis>=5,<6",
+    # SSE 响应支持，给流式接口返回事件流。
+    "sse-starlette>=2,<3",
+    # 读取 .env 配置文件，让本地环境变量加载更方便。
+    "python-dotenv>=1,<2",
 ]
 
 [project.optional-dependencies]
 dev = [
+    # 测试框架，用来执行单元测试和集成测试。
     "pytest>=8,<9",
+    # 让 pytest 可以直接测试 async/await 代码。
+    "pytest-asyncio>=0.24,<1",
+    # HTTP 客户端，测试 FastAPI 接口时会用到。
+    "httpx>=0.27,<1",
+    # 代码风格和静态检查工具。
     "ruff>=0.9,<1",
+    # 类型检查工具，用来验证类型标注是否一致。
     "mypy>=1.11,<2",
 ]
 
 [tool.setuptools]
+# 告诉 setuptools：Python 包代码放在 src 目录下。
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
+# 从 src 目录里自动发现需要打包的包。
 where = ["src"]
 
 [tool.pytest.ini_options]
+# 让 pytest 运行时把 src 加进模块搜索路径，并默认只收集 tests 目录。
 pythonpath = ["src"]
+testpaths = ["tests"]
