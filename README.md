@@ -1,22 +1,27 @@
 # Agent Orchestrator Platform
 
-Minimal Python agent engineering scaffold for a 12-stage AI agent roadmap.
+`python-agent-phase-03-runtime` is Phase 03 of a 12-phase Python AI agent roadmap.
 
-This repository currently covers two stages:
+This phase focuses on `Tool Calling + Structured Output + Workflow foundations`.
+The repo keeps the small FastAPI backend shell from earlier work, but the main upgrade here is a runnable
+`planner -> orchestrator -> runtime` loop with prompt templates, retry / timeout control, and persisted
+`llm_calls / tool_calls / workflow_runs`.
 
-- Stage 1: a small but real `agent_runtime` core
-- Stage 2: a backend shell built with `FastAPI`, `SQLAlchemy`, persistence tables, and `SSE`
-
-It is not a full agent platform yet. What it already gives you is a runnable, testable skeleton that shows how a small runtime grows into a real backend service.
+It is not the full Phase 04+ orchestrator platform yet. It is the smallest correct runtime skeleton that can
+plan, call tools, observe results, and return a structured final answer.
 
 ## What This Repo Covers
 
 - `agent_runtime` core execution flow
 - Tool registry and Pydantic argument validation
-- Normalized runtime errors
-- Logging middleware
+- Normalized runtime errors and logging middleware
+- Planner abstraction with prompt templates and structured decisions
+- Minimal `planner -> tool execution -> observation -> re-plan` loop
+- `respond / tool_call` structured output handling
+- Retry / timeout control and token / latency tracing
 - FastAPI app bootstrap with lifespan and `app.state`
 - SQLAlchemy models and repository layer
+- Persistence for `sessions`, `messages`, `llm_calls`, `tool_calls`, and `workflow_runs`
 - SQLite-first local development, with PostgreSQL-ready settings
 - SSE streaming with memory or Redis-backed event cache
 - Unit tests, integration tests, linting, and type checking
@@ -55,9 +60,11 @@ Quick verification:
 ./.venv/bin/mypy --version
 ```
 
-## Stage 2 Backend Shell
+## Phase 03 Runtime
 
-The Stage 2 shell can run locally with SQLite immediately, and it can later be pointed at PostgreSQL and Redis through environment variables.
+This Phase 03 runtime can run locally with SQLite immediately. By default it uses the demo planner so you can
+verify the full agent loop before wiring in a real model provider. It can later be pointed at PostgreSQL and
+Redis through environment variables.
 
 Run the verification loop:
 
@@ -87,36 +94,42 @@ curl -N "http://127.0.0.1:8000/api/v1/chat/stream?session_id=sess-002&message=ad
 
 If you want PostgreSQL and Redis instead of SQLite, start the containers in [compose.yaml](./compose.yaml) and copy settings from [.env.example](./.env.example).
 
+For the Phase 03 architecture tutorial, see [docs/agent_service_architecture_tutorial.md](./docs/agent_service_architecture_tutorial.md).
+
 ## Current Scope
 
 The current codebase is intentionally small, but it already has real structure:
 
 - Runtime layer
+- Planner layer
+- Orchestrator layer
 - API layer
 - Service layer
 - Repository layer
 - Database infrastructure layer
 - Streaming and cache layer
 
-The goal is not to learn all Python syntax. The goal is to understand how a small agent backend is assembled:
+The goal is not to learn all Python syntax. The goal is to understand how a small agent runtime grows into a
+real service:
 
 - how input enters the system
 - where dependencies come from
-- where business orchestration lives
+- where planning, orchestration, and execution boundaries live
 - where persistence happens
-- where validation and normalized errors happen
+- where validation, retries, and normalized errors happen
 - how startup bootstrap differs from request handling
 
 ## Architecture Mental Model
 
-For Stage 2, the shortest useful map is:
+For Phase 03, the shortest useful map is:
 
 ```text
 client
   -> api/chat.py
   -> Depends(...) from api/deps.py
   -> ChatService
-  -> RuntimeService / StreamService
+  -> OrchestratorService
+  -> PlannerService <-> RuntimeService
   -> repositories
   -> db models + db session
 ```
@@ -134,16 +147,16 @@ create_app()
   -> app.state
 ```
 
-This repo also includes a Stage 2 architecture diagram and exported tutorial:
+This repo also includes backend architecture docs for Phase 03:
 
-- [agent_service architecture drawio](./agent_service架构.drawio)
+- [Phase 03 architecture tutorial](./docs/agent_service_architecture_tutorial.md)
+- [agent_service architecture drawio](./docs/agent_service架构.drawio)
 - [architecture tutorial](./docs/agent_service_architecture_tutorial.md)
-- [architecture report PDF](./docs/agent_service_architecture_tutorial.pdf)
 
 ## Project Layout
 
 ```text
-agent-orchestrator-platform/
+project-root/
 ├── README.md
 ├── .env.example
 ├── alembic.ini
@@ -254,7 +267,7 @@ Suggested order:
 5. `src/agent_service/schemas/`
    Understand request and response contracts.
 6. `src/agent_service/services/chat_service.py`
-   This is the Stage 2 business orchestration center.
+   This is the Phase 03 transaction and persistence center.
 7. `src/agent_service/services/runtime_service.py`
    Understand message parsing and runtime bridging.
 8. `src/agent_service/services/stream_service.py`
@@ -311,27 +324,31 @@ uv run ruff check .
 uv run mypy src tests examples
 ```
 
-## What "Stage 2 Complete" Looks Like
+## What "Phase 03 Complete" Looks Like
 
 You are ready to move on when you can explain these things without guessing:
 
 - how `agent_runtime` executes a tool call
 - how `AgentRuntimeError` becomes structured output
+- how `PlannerService` renders prompts and applies retry / timeout
+- how `PlannerDecision` becomes either `respond` or `tool_call`
+- how `OrchestratorService` runs `plan -> execute -> observe -> re-plan`
 - how `main.py` bootstraps shared state with lifespan
 - how `api/deps.py` injects dependencies into the route layer
-- how `ChatService` coordinates persistence and runtime execution
+- how `ChatService` coordinates persistence for `llm_calls`, `tool_calls`, and `workflow_runs`
 - how repositories differ from ORM models
 - how `StreamService` turns one response into SSE events
 
 ## Next Step
 
-The next stage is to make the backend smarter rather than just bigger:
+The next phase is to make the orchestration layer more stateful and controllable:
 
-- Tool Calling
-- Structured Output
-- Workflow
-- Retry / Timeout
-- Prompt management
-- Eval
+- LangGraph / state graph
+- Human-in-the-loop approval
+- Checkpoint / resume
+- Conditional routing
+- Richer workflow state management
+- Eval hooks on top of the loop
 
-The goal is not to replace `agent_runtime`. The goal is to place this runtime inside a real backend skeleton and then keep evolving the orchestration layer.
+The goal is not to replace `agent_runtime`. The goal is to evolve the current Phase 03 loop into a Phase 04
+workflow engine without losing the clean boundaries already in place.

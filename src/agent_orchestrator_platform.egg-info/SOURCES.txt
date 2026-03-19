@@ -24,6 +24,7 @@ src/agent_service/db/models.py
 src/agent_service/db/session.py
 src/agent_service/repositories/__init__.py
 src/agent_service/repositories/evaluations.py
+src/agent_service/repositories/llm_calls.py
 src/agent_service/repositories/messages.py
 src/agent_service/repositories/sessions.py
 src/agent_service/repositories/tool_calls.py
@@ -34,6 +35,13 @@ src/agent_service/schemas/common.py
 src/agent_service/services/__init__.py
 src/agent_service/services/cache_service.py
 src/agent_service/services/chat_service.py
+src/agent_service/services/orchestrator_service.py
+src/agent_service/services/planner_service.py
 src/agent_service/services/runtime_service.py
 src/agent_service/services/stream_service.py
+src/agent_service/services/planners/__init__.py
+src/agent_service/services/planners/base.py
+src/agent_service/services/planners/deepseek_client.py
+src/agent_service/services/planners/demo_client.py
+tests/test_orchestrator_service.py
 tests/test_runtime.py

@@ -21,6 +21,22 @@ def _read_bool(value: str | None, *, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _read_int(value: str | None, *, default: int) -> int:
+    """把环境变量里的字符串转换成整数。"""
+
+    if value is None:
+        return default
+    return int(value.strip())
+
+
+def _read_float(value: str | None, *, default: float) -> float:
+    """把环境变量里的字符串转换成浮点数。"""
+
+    if value is None:
+        return default
+    return float(value.strip())
+
+
 @dataclass(slots=True, frozen=True)
 class Settings:
     """应用启动时使用的统一配置对象。"""
@@ -40,6 +56,22 @@ class Settings:
     # 启动应用时是否自动建表。
     # 本地学习阶段设为 True 比较省事，生产环境通常更建议走 Alembic 迁移。
     auto_create_schema: bool = True
+    # Week 3 默认用 demo planner，先把 agent loop 骨架跑通。
+    planner_provider: str = "demo"
+    # 记录当前规划器模型名；即便是 demo provider，也保留统一字段方便后续切真实模型。
+    planner_model: str = "demo-structured-planner-v1"
+    # Prompt 名称，用来区分不同规划模板。
+    planner_prompt_name: str = "tool-planner"
+    # Prompt 版本，用来记录一次决策使用的是哪一版模板。
+    planner_prompt_version: str = "v1"
+    # 一次 agent loop 最多规划多少步，避免死循环。
+    agent_max_steps: int = 4
+    # 单次模型调用最大等待时间，超过后按 timeout 处理。
+    planner_timeout_seconds: float = 5.0
+    # 规划失败后的最大重试次数。
+    planner_max_retries: int = 1
+    # DeepSeek API Key，切换到 deepseek provider 时必填。
+    deepseek_api_key: str | None = None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -70,4 +102,15 @@ class Settings:
                 os.getenv("AUTO_CREATE_SCHEMA"),
                 default=True,
             ),
+            planner_provider=os.getenv("PLANNER_PROVIDER", "demo"),
+            planner_model=os.getenv("PLANNER_MODEL", "demo-structured-planner-v1"),
+            planner_prompt_name=os.getenv("PLANNER_PROMPT_NAME", "tool-planner"),
+            planner_prompt_version=os.getenv("PLANNER_PROMPT_VERSION", "v1"),
+            agent_max_steps=_read_int(os.getenv("AGENT_MAX_STEPS"), default=4),
+            planner_timeout_seconds=_read_float(
+                os.getenv("PLANNER_TIMEOUT_SECONDS"),
+                default=5.0,
+            ),
+            planner_max_retries=_read_int(os.getenv("PLANNER_MAX_RETRIES"), default=1),
+            deepseek_api_key=os.getenv("DEEPSEEK_API_KEY"),
         )

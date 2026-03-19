@@ -27,6 +27,8 @@ dependencies = [
     "sse-starlette>=2,<3",
     # 读取 .env 配置文件，让本地环境变量加载更方便。
     "python-dotenv>=1,<2",
+    # OpenAI 兼容客户端，DeepSeek API 使用同一接口规范。
+    "openai>=1.0,<2",
 ]
 
 [project.optional-dependencies]

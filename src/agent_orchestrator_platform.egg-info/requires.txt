@@ -7,6 +7,7 @@ psycopg[binary]<4,>=3.2
 redis<6,>=5
 sse-starlette<3,>=2
 python-dotenv<2,>=1
+openai<2,>=1.0
 
 [dev]
 pytest<9,>=8

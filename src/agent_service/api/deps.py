@@ -6,7 +6,8 @@ from fastapi import Request
 from sqlalchemy.orm import Session
 
 from agent_service.services.cache_service import EventCache
-from agent_service.services.runtime_service import RuntimeService
+from agent_service.services.orchestrator_service import OrchestratorService
+
 
 
 def get_db_session(request: Request) -> Iterator[Session]:
@@ -22,10 +23,10 @@ def get_db_session(request: Request) -> Iterator[Session]:
         session.close()
 
 
-def get_runtime_service(request: Request) -> RuntimeService:
-    # 取出应用启动时就初始化好的 RuntimeService。
-    # 它承接第一周 AgentRuntime 的能力，给聊天接口复用，不需要每次请求重新创建。
-    return request.app.state.runtime_service
+def get_orchestrator_service(request: Request) -> OrchestratorService:
+    # 取出应用启动时初始化好的编排层。
+    # 它会把 planner 和 runtime 串成完整的 agent loop。
+    return request.app.state.orchestrator_service
 
 
 def get_event_cache(request: Request) -> EventCache:

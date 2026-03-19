@@ -1,15 +1,26 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any
 
 from pydantic import BaseModel
 
 from agent_runtime import AgentRuntime, LoggingMiddleware, ToolResult, get_logger
+from agent_service.services.planners import ToolObservation, ToolSchema
 
 
 class AddArgs(BaseModel):
+    a: int
+    b: int
+
+
+class MultiplyArgs(BaseModel):
+    a: int
+    b: int
+
+
+class DivideArgs(BaseModel):
     a: int
     b: int
 
@@ -20,6 +31,16 @@ class CityArgs(BaseModel):
 
 def add_handler(args: AddArgs) -> int:
     return args.a + args.b
+
+
+def multiply_handler(args: MultiplyArgs) -> int:
+    return args.a * args.b
+
+
+def divide_handler(args: DivideArgs) -> float:
+    if args.b == 0:
+        raise ValueError("division by zero is not allowed")
+    return args.a / args.b
 
 
 def city_handler(args: CityArgs) -> str:
@@ -41,6 +62,7 @@ class ParsedToolRequest:
 class RuntimeExecution:
     request: ParsedToolRequest
     result: ToolResult
+    latency_ms: float
 
 
 def build_runtime() -> AgentRuntime:
@@ -53,6 +75,18 @@ def build_runtime() -> AgentRuntime:
         handler=add_handler,
     )
     runtime.register_tool(
+        name="multiply",
+        description="Multiply two integers.",
+        args_model=MultiplyArgs,
+        handler=multiply_handler,
+    )
+    runtime.register_tool(
+        name="divide",
+        description="Divide one integer by another integer.",
+        args_model=DivideArgs,
+        handler=divide_handler,
+    )
+    runtime.register_tool(
         name="get_city",
         description="Get a city by city code.",
         args_model=CityArgs,
@@ -62,41 +96,56 @@ def build_runtime() -> AgentRuntime:
 
 
 class RuntimeService:
-    def __init__(self, runtime: AgentRuntime | None = None) -> None:
+    # 这一层现在只干执行相关的事情：
+    # 1. 把已注册工具整理成 schema 给 planner 看
+    # 2. 真正调用底层 agent_runtime 去执行工具
+    # 3. 把工具结果翻译成 observation，供下一轮规划使用
+    def __init__(self, *, runtime: AgentRuntime | None = None) -> None:
         self._runtime = runtime or build_runtime()
 
-    def parse_message(self, message: str) -> ParsedToolRequest | None:
-        if "add" in message:
-            a_match = re.search(r"a\s*=\s*(-?\d+)", message)
-            b_match = re.search(r"b\s*=\s*(-?\d+)", message)
-            if a_match and b_match:
-                return ParsedToolRequest(
-                    action="add",
-                    arguments={
-                        "a": int(a_match.group(1)),
-                        "b": int(b_match.group(1)),
-                    },
-                )
+    def available_tool_schemas(self, allowed_tools: tuple[str, ...] | None = None) -> list[ToolSchema]:
+        allowed = set(allowed_tools or ())
+        definitions = [
+            tool
+            for tool in self._runtime.registry.definitions()
+            if not allowed or tool.name in allowed
+        ]
+        return [
+            ToolSchema(
+                name=tool.name,
+                description=tool.description,
+                arguments_json_schema=tool.args_model.model_json_schema(),
+            )
+            for tool in definitions
+        ]
 
-        if "get_city" in message or "city_code" in message:
-            city_match = re.search(r"city_code\s*=\s*([a-zA-Z]+)", message)
-            if city_match:
-                return ParsedToolRequest(
-                    action="get_city",
-                    arguments={"city_code": city_match.group(1).lower()},
-                )
-
-        return None
-
-    def execute_from_message(self, message: str, *, request_id: str) -> RuntimeExecution | None:
-        parsed_request = self.parse_message(message)
-        if parsed_request is None:
-            return None
-
+    def execute_action(
+        self,
+        action: str,
+        arguments: dict[str, Any],
+        *,
+        request_id: str,
+        source: str,
+    ) -> RuntimeExecution:
+        start = perf_counter()
         result = self._runtime.execute(
-            parsed_request.action,
-            parsed_request.arguments,
+            action,
+            arguments,
             request_id=request_id,
-            metadata={"source": "chat_service"},
+            metadata={"source": source},
         )
-        return RuntimeExecution(request=parsed_request, result=result)
+        return RuntimeExecution(
+            request=ParsedToolRequest(action=action, arguments=arguments),
+            result=result,
+            latency_ms=(perf_counter() - start) * 1000,
+        )
+
+    def build_observation(self, execution: RuntimeExecution) -> ToolObservation:
+        error_message = execution.result.error.message if execution.result.error is not None else None
+        return ToolObservation(
+            tool_name=execution.request.action,
+            arguments=execution.request.arguments,
+            success=execution.result.success,
+            result=execution.result.result,
+            error_message=error_message,
+        )

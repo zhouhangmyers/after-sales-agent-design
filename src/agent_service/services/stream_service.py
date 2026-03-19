@@ -17,24 +17,36 @@ class StreamService:
     def __init__(self, event_cache: EventCache) -> None:
         self._event_cache = event_cache
 
-    async def iter_events(self, response: ChatResponse) -> AsyncIterator[dict[str, str]]:
+    async def iter_post_response_events(self, response: ChatResponse) -> AsyncIterator[dict[str, str]]:
         events: list[dict[str, Any]] = [
             {
                 "type": "start",
+                "stream_mode": "post_response_sse",
                 "session_id": response.session_id,
                 "message_id": response.message_id,
+                "workflow_run_id": response.workflow_run_id,
             },
+        ]
+        tool_results = response.tool_results or ([response.tool_result] if response.tool_result is not None else [])
+        for tool_result in tool_results:
+            events.append(
+                {
+                    "type": "tool_result",
+                    **tool_result.model_dump(),
+                }
+            )
+        events.append(
             {
                 "type": "message",
                 "assistant_message_id": response.assistant_message_id,
                 "content": response.reply,
-            },
-        ]
-        if response.tool_result is not None:
+            }
+        )
+        if response.usage is not None:
             events.append(
                 {
-                    "type": "tool_result",
-                    **response.tool_result.model_dump(),
+                    "type": "usage",
+                    **response.usage.model_dump(),
                 }
             )
         events.append({"type": "done"})

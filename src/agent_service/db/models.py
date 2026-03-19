@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -109,6 +109,59 @@ class ToolCallRecord(Base):
     # 后面做性能分析、超时控制、可观测性时会很有用。
     latency_ms: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     # 记录这次工具调用是什么时候发生的。
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+class LLMCallRecord(Base):
+    # 这张表存的是“一次模型规划调用”的完整痕迹。
+    # Week 3 起，agent loop 不再只是正则解析，而是先让规划器决定“回复”还是“调工具”，
+    # 这张表就是用来记录每次规划调用的 prompt、structured output、token 使用和错误信息。
+    __tablename__ = "llm_calls"
+
+    # 模型调用记录唯一 ID。
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # 这次模型调用属于哪条会话。
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # 这次模型调用是由哪条用户消息触发的。
+    message_id: Mapped[str] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # 对应哪一次 workflow run。
+    workflow_run_id: Mapped[str] = mapped_column(
+        ForeignKey("workflow_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # 规划器提供方，例如 demo / openai / anthropic。
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 记录当前使用的模型名。
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    # Prompt 名称与版本，方便后续比较不同模板表现。
+    prompt_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 原始请求、原始响应，以及解析后的结构化输出都保留为 JSON 字符串。
+    request_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    response_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    structured_output_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    # 记录 retry 后实际尝试了几次。
+    attempts: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # 记录本次调用的 token 使用。
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # 调用耗时，单位毫秒。
+    latency_ms: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # 是否成功拿到可用的 structured output。
+    success: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 如果失败，这里记录统一的错误结构，仍然按 JSON 字符串存储。
+    error_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

@@ -50,3 +50,7 @@ class ToolRegistry:
         # 返回全部工具名，排序后更稳定，便于日志、测试和错误提示。
         # sorted(dict) 默认排的是字典的 key，不是整条键值对。
         return sorted(self._tools)
+
+    def definitions(self) -> list[ToolDefinition]:
+        # 返回全部工具定义，供上层生成 tool schema、prompt 上下文或调试信息使用。
+        return [self._tools[name] for name in self.names()]
