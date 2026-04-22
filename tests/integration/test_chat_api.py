@@ -1,80 +1,247 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from collections.abc import Awaitable, Callable
+from pathlib import Path
 
-from agent_service.api.chat import create_chat_response
-from agent_service.db.models import LLMCallRecord, MessageRecord, SessionRecord, ToolCallRecord, WorkflowRunRecord
-from agent_service.schemas.chat import ChatRequest
+from langgraph.checkpoint.memory import MemorySaver
+
+import httpx
+import pytest
+
+from tests.helpers import build_test_app
 
 
-def test_chat_endpoint_executes_runtime_and_persists_records(app, db_session) -> None:
-    response = create_chat_response(
-        ChatRequest(session_id="sess-001", message="请执行 add 工具，参数 a=3, b=7"),
-        db_session,
-        app.state.orchestrator_service,
+async def _with_client(
+    database_path: Path,
+    fn: Callable[[httpx.AsyncClient], Awaitable[None]],
+) -> None:
+    app = build_test_app(f"sqlite+pysqlite:///{database_path}")
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            await fn(client)
+
+
+@pytest.mark.asyncio
+async def test_post_chat_message_implicitly_creates_conversation_and_completes(tmp_path: Path) -> None:
+    async def _run(client: httpx.AsyncClient) -> None:
+        response = await client.post(
+            "/api/v2/chat/messages",
+            json={"message": "please add a=2 b=3"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["conversation_id"].startswith("conv-")
+        assert body["status"] == "completed"
+        assert body["reply"] == "我已经调用 `add` 完成处理，结果是 5。"
+        assert body["pending_action"] is None
+        assert body["error"] is None
+        assert sorted(body["usage"]) == [
+            "completion_tokens",
+            "prompt_tokens",
+            "total_tokens",
+        ]
+
+    await _with_client(tmp_path / "chat-complete.db", _run)
+
+
+@pytest.mark.asyncio
+async def test_post_chat_message_can_continue_existing_conversation(tmp_path: Path) -> None:
+    async def _run(client: httpx.AsyncClient) -> None:
+        first = await client.post(
+            "/api/v2/chat/messages",
+            json={"message": "please add a=2 b=3"},
+        )
+        conversation_id = first.json()["conversation_id"]
+
+        second = await client.post(
+            "/api/v2/chat/messages",
+            json={
+                "conversation_id": conversation_id,
+                "message": "please divide a=8 b=2",
+            },
+        )
+
+        assert second.status_code == 200
+        body = second.json()
+        assert body["conversation_id"] == conversation_id
+        assert body["status"] == "completed"
+        assert body["reply"] == "我已经调用 `divide` 完成处理，结果是 4.0。"
+
+    await _with_client(tmp_path / "chat-continue.db", _run)
+
+
+@pytest.mark.asyncio
+async def test_chat_state_hides_messages_and_reports_pending_action(tmp_path: Path) -> None:
+    async def _run(client: httpx.AsyncClient) -> None:
+        create = await client.post(
+            "/api/v2/chat/messages",
+            json={"message": "please multiply a=2 b=3"},
+        )
+        assert create.status_code == 200
+        body = create.json()
+        assert body["status"] == "awaiting_action"
+
+        state = await client.get(f"/api/v2/chat/state/{body['conversation_id']}")
+        assert state.status_code == 200
+        state_body = state.json()
+        assert state_body == {
+            "conversation_id": body["conversation_id"],
+            "status": "awaiting_action",
+            "last_reply": "工具 `multiply` 需要人工审批，当前对话已暂停，等待批准后继续。",
+            "pending_action": {
+                "kind": "tool_approval",
+                "tool_name": "multiply",
+                "tool_arguments": {"a": 2, "b": 3},
+                "reason": "工具 `multiply` 当前策略要求人工审批后才能执行。",
+                "risk_level": "medium",
+            },
+        }
+        assert "messages" not in state_body
+
+    await _with_client(tmp_path / "chat-state.db", _run)
+
+
+@pytest.mark.asyncio
+async def test_chat_resume_approved_and_rejected_paths(tmp_path: Path) -> None:
+    async def _run(client: httpx.AsyncClient) -> None:
+        create = await client.post(
+            "/api/v2/chat/messages",
+            json={"message": "please multiply a=2 b=3"},
+        )
+        conversation_id = create.json()["conversation_id"]
+
+        approved = await client.post(
+            "/api/v2/chat/resume",
+            json={
+                "conversation_id": conversation_id,
+                "decision": "approved",
+            },
+        )
+        assert approved.status_code == 200
+        approved_body = approved.json()
+        assert approved_body["status"] == "completed"
+        assert approved_body["reply"] == "我已经调用 `multiply` 完成处理，结果是 6。"
+        assert approved_body["pending_action"] is None
+
+        rejected_create = await client.post(
+            "/api/v2/chat/messages",
+            json={"message": "please multiply a=4 b=5"},
+        )
+        rejected_conversation_id = rejected_create.json()["conversation_id"]
+        rejected = await client.post(
+            "/api/v2/chat/resume",
+            json={
+                "conversation_id": rejected_conversation_id,
+                "decision": "rejected",
+            },
+        )
+        assert rejected.status_code == 200
+        rejected_body = rejected.json()
+        assert rejected_body["status"] == "completed"
+        assert rejected_body["reply"] == "人工审批已拒绝，本次不会执行工具 `multiply`。"
+        assert rejected_body["pending_action"] is None
+
+    await _with_client(tmp_path / "chat-resume.db", _run)
+
+
+@pytest.mark.asyncio
+async def test_chat_rejects_new_message_while_conversation_waits_for_approval(tmp_path: Path) -> None:
+    async def _run(client: httpx.AsyncClient) -> None:
+        create = await client.post(
+            "/api/v2/chat/messages",
+            json={"message": "please multiply a=2 b=3"},
+        )
+        conversation_id = create.json()["conversation_id"]
+
+        conflict = await client.post(
+            "/api/v2/chat/messages",
+            json={
+                "conversation_id": conversation_id,
+                "message": "hello again",
+            },
+        )
+        assert conflict.status_code == 409
+        assert conflict.json() == {
+            "detail": "conversation is waiting for approval; use /chat/resume instead"
+        }
+
+    await _with_client(tmp_path / "chat-conflict.db", _run)
+
+
+@pytest.mark.asyncio
+async def test_chat_unknown_conversation_returns_not_found(tmp_path: Path) -> None:
+    async def _run(client: httpx.AsyncClient) -> None:
+        response = await client.get("/api/v2/chat/state/conv-missing")
+        assert response.status_code == 404
+        assert response.json() == {"detail": "conversation not found: conv-missing"}
+
+    await _with_client(tmp_path / "chat-missing.db", _run)
+
+
+@pytest.mark.asyncio
+async def test_chat_resume_survives_app_restart_with_same_checkpointer(tmp_path: Path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'chat-restart.db'}"
+    checkpointer = MemorySaver()
+
+    first_app = build_test_app(database_url, checkpointer=checkpointer)
+    async with first_app.router.lifespan_context(first_app):
+        transport = httpx.ASGITransport(app=first_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            create = await client.post(
+                "/api/v2/chat/messages",
+                json={"message": "please multiply a=2 b=3"},
+            )
+            assert create.status_code == 200
+            conversation_id = create.json()["conversation_id"]
+
+    second_app = build_test_app(database_url, checkpointer=checkpointer)
+    async with second_app.router.lifespan_context(second_app):
+        transport = httpx.ASGITransport(app=second_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            resumed = await client.post(
+                "/api/v2/chat/resume",
+                json={
+                    "conversation_id": conversation_id,
+                    "decision": "approved",
+                },
+            )
+
+    assert resumed.status_code == 200
+    resumed_body = resumed.json()
+    assert resumed_body["conversation_id"] == conversation_id
+    assert resumed_body["status"] == "completed"
+    assert resumed_body["reply"] == "我已经调用 `multiply` 完成处理，结果是 6。"
+
+
+def test_chat_openapi_contract_stays_stable(tmp_path: Path) -> None:
+    app = build_test_app(f"sqlite+pysqlite:///{tmp_path / 'chat-openapi.db'}")
+    openapi = app.openapi()
+
+    assert openapi["paths"]["/api/v2/chat/messages"]["post"]["operationId"] == (
+        "post_chat_message_api_v2_chat_messages_post"
+    )
+    assert openapi["paths"]["/api/v2/chat/messages"]["post"]["tags"] == ["chat"]
+    assert openapi["paths"]["/api/v2/chat/messages/stream"]["post"]["operationId"] == (
+        "stream_chat_message_api_v2_chat_messages_stream_post"
+    )
+    assert openapi["paths"]["/api/v2/chat/resume"]["post"]["operationId"] == (
+        "resume_chat_message_api_v2_chat_resume_post"
+    )
+    assert openapi["paths"]["/api/v2/chat/state/{conversation_id}"]["get"]["operationId"] == (
+        "get_chat_state_api_v2_chat_state__conversation_id__get"
     )
 
-    assert response.session_id == "sess-001"
-    assert response.workflow_run_id.startswith("wf-")
-    assert response.tool_result is not None
-    assert response.tool_result.success is True
-    assert response.tool_result.result == 10
-    assert len(response.tool_results) == 1
-    assert response.usage is not None
-    assert response.usage.total_tokens > 0
-    assert "我已经调用 `add` 完成处理" in response.reply
-
-    with app.state.db_manager.session() as session:
-        assert session.get(SessionRecord, "sess-001") is not None
-        messages = session.scalars(select(MessageRecord)).all()
-        tool_calls = session.scalars(select(ToolCallRecord)).all()
-        workflow_runs = session.scalars(select(WorkflowRunRecord)).all()
-        llm_calls = session.scalars(select(LLMCallRecord)).all()
-
-    assert len(messages) == 2
-    assert len(tool_calls) == 1
-    assert len(workflow_runs) == 1
-    assert len(llm_calls) == 2
-
-
-def test_chat_endpoint_handles_plain_message_without_tool(app, db_session) -> None:
-    response = create_chat_response(
-        ChatRequest(session_id="sess-plain", message="hello runtime"),
-        db_session,
-        app.state.orchestrator_service,
-    )
-
-    assert response.workflow_run_id.startswith("wf-")
-    assert response.tool_result is None
-    assert response.tool_results == []
-    assert response.usage is not None
-    assert response.usage.total_tokens > 0
-    assert "当前 demo planner 没找到必须调用工具的场景" in response.reply
-
-    with app.state.db_manager.session() as session:
-        llm_calls = session.scalars(select(LLMCallRecord)).all()
-        tool_calls = session.scalars(select(ToolCallRecord)).all()
-
-    assert len(llm_calls) == 1
-    assert len(tool_calls) == 0
-
-
-def test_chat_endpoint_records_failed_tool_and_returns_structured_reply(app, db_session) -> None:
-    response = create_chat_response(
-        ChatRequest(session_id="sess-fail", message="请执行 divide 工具，参数 a=10, b=0"),
-        db_session,
-        app.state.orchestrator_service,
-    )
-
-    assert response.tool_result is not None
-    assert response.tool_result.success is False
-    assert len(response.tool_results) == 1
-    assert "工具 `divide` 执行失败" in response.reply
-
-    with app.state.db_manager.session() as session:
-        tool_calls = session.scalars(select(ToolCallRecord)).all()
-        llm_calls = session.scalars(select(LLMCallRecord)).all()
-
-    assert len(tool_calls) == 1
-    assert tool_calls[0].success is False
-    assert len(llm_calls) == 2
+    schema_names = set(openapi["components"]["schemas"])
+    assert {
+        "ChatMessageRequest",
+        "ConversationErrorModel",
+        "ConversationStateResponse",
+        "ConversationTurnResponse",
+        "PendingActionModel",
+        "ResumeConversationRequest",
+    }.issubset(schema_names)

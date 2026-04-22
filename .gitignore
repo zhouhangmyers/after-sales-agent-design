@@ -7,9 +7,9 @@ __pycache__/
 *.pyc
 .uv-cache/
 
-.env
-.env.*
-!.env.example
+# .env
+# .env.*
+# !.env.example
 
 *.db
 *.sqlite

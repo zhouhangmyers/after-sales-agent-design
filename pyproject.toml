@@ -5,12 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-orchestrator-platform"
 version = "0.1.0"
-description = "Minimal agent runtime scaffold for the 12-week AI agent roadmap."
+description = "LangGraph-driven chat backend built with FastAPI."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     # 数据校验与请求/响应模型定义。
     "pydantic>=2,<3",
+    # 应用配置与 .env 解析，替代手写环境变量读取。
+    "pydantic-settings>=2.0",
     # Web API 框架，负责路由、依赖注入和接口定义。
     "fastapi>=0.115,<1",
     # ASGI 服务启动器，用来运行 FastAPI 应用。
@@ -21,14 +23,20 @@ dependencies = [
     "alembic>=1.13,<2",
     # PostgreSQL 驱动，项目切换到 Postgres 时通过它连接数据库。
     "psycopg[binary]>=3.2,<4",
-    # Redis 客户端，用于事件缓存等可选能力。
-    "redis>=5,<6",
     # SSE 响应支持，给流式接口返回事件流。
     "sse-starlette>=2,<3",
-    # 读取 .env 配置文件，让本地环境变量加载更方便。
-    "python-dotenv>=1,<2",
-    # OpenAI 兼容客户端，DeepSeek API 使用同一接口规范。
-    "openai>=1.0,<2",
+    # LangChain 核心抽象，统一模型、工具和结构化输出接口。
+    "langchain>=1,<2",
+    # LangGraph 负责状态图编排、审批中断与恢复执行。
+    "langgraph>=1,<2",
+    # LangGraph PostgreSQL checkpointer，用于 durable workflow state。
+    "langgraph-checkpoint-postgres>=3,<4",
+    # DeepSeek 的 LangChain 官方集成包。
+    "langchain-deepseek>=1,<2",
+    # 标准重试库，用于受控的 LLM timeout retry。
+    "tenacity>=8,<9",
+    # 标准 tokenizer，用于更准确的 token 统计 fallback。
+    "tiktoken>=0.9,<1",
 ]
 
 [project.optional-dependencies]
@@ -57,3 +65,21 @@ where = ["src"]
 # 让 pytest 运行时把 src 加进模块搜索路径，并默认只收集 tests 目录。
 pythonpath = ["src"]
 testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "session"
+
+[tool.ruff.lint]
+# E/F: pycodestyle + pyflakes 基础规则；I: isort 导入排序；UP: pyupgrade 现代化语法；
+# B: flake8-bugbear 常见 bug 模式；N: pep8 命名规范。
+select = ["E", "F", "I", "UP", "B", "N"]
+# E501: 行长度交给格式化工具处理，lint 不报错。
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI 依赖注入的标准写法会触发 B008，这里按路由层显式豁免。
+"src/agent_service/api/routers/*.py" = ["B008"]
+
+[tool.mypy]
+# strict 模式启用所有核心严格检查（untyped defs、no Any、warn_return_any 等）。
+strict = true
+# 第三方库缺少 py.typed / stub 时不报错，避免噪音。
+ignore_missing_imports = true
