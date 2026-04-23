@@ -14,8 +14,11 @@ from tenacity import (
     wait_exponential,
 )
 
-from agent_service.config import Settings
-from agent_service.llm.types import ChatClient, ToolBindableChatModel
+from agent_service.llm.types import (
+    ChatClient,
+    RunnableMessageModel,
+    ToolBindableChatModel,
+)
 
 
 def _build_retryable_exception_types() -> tuple[type[BaseException], ...]:
@@ -68,9 +71,9 @@ class BoundChatClient:
         self.model = model
         self._chat_model = chat_model
         self._bound_model_cache_size = max(1, bound_model_cache_size)
-        self._bound_models: OrderedDict[tuple[str, ...], object] = OrderedDict()
+        self._bound_models: OrderedDict[tuple[str, ...], RunnableMessageModel] = OrderedDict()
 
-    def _get_bound_model(self, tools: list[BaseTool]) -> object:
+    def _get_bound_model(self, tools: list[BaseTool]) -> RunnableMessageModel:
         if not tools:
             return self._chat_model
 
@@ -86,19 +89,6 @@ class BoundChatClient:
         if len(self._bound_models) > self._bound_model_cache_size:
             self._bound_models.popitem(last=False)
         return bound_model
-
-    def invoke(
-        self,
-        messages: list[BaseMessage],
-        tools: list[BaseTool],
-        config: RunnableConfig | None = None,
-    ) -> AIMessage:
-        response = self._get_bound_model(tools).invoke(messages, config=config)
-        if not isinstance(response, AIMessage):
-            raise TypeError(
-                f"Expected AIMessage from chat model client, got {type(response).__name__}"
-            )
-        return response
 
     async def ainvoke(
         self,
@@ -177,10 +167,17 @@ async def invoke_chat_model_with_retry(
     )
 
 
-def build_chat_client(settings: Settings) -> BoundChatClient:
-    if settings.llm_provider != "deepseek":
-        raise ValueError(f"unsupported llm provider: {settings.llm_provider}")
-    if settings.deepseek_api_key is None:
+def build_chat_client(
+    *,
+    llm_provider: str,
+    llm_model: str,
+    llm_timeout_seconds: float,
+    llm_max_retries: int,
+    deepseek_api_key: str | None,
+) -> BoundChatClient:
+    if llm_provider != "deepseek":
+        raise ValueError(f"unsupported llm provider: {llm_provider}")
+    if deepseek_api_key is None:
         raise ValueError("DEEPSEEK_API_KEY is required when llm_provider=deepseek")
     try:
         from langchain_deepseek import ChatDeepSeek
@@ -189,15 +186,15 @@ def build_chat_client(settings: Settings) -> BoundChatClient:
             "DeepSeek chat model support requires the LangChain DeepSeek integration package."
         ) from exc
     chat_model = ChatDeepSeek(
-        api_key=settings.deepseek_api_key.get_secret_value(),
-        model=settings.llm_model,
+        api_key=deepseek_api_key,
+        model=llm_model,
         temperature=0,
         streaming=True,
-        timeout=settings.llm_timeout_seconds,
-        max_retries=settings.llm_max_retries,
+        timeout=llm_timeout_seconds,
+        max_retries=llm_max_retries,
     )
     return BoundChatClient(
         chat_model=chat_model,
         provider="deepseek",
-        model=settings.llm_model,
+        model=llm_model,
     )

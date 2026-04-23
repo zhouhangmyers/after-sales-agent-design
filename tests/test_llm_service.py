@@ -7,7 +7,6 @@ import types
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
-from pydantic import SecretStr
 from tenacity import (
     AsyncRetrying,
     retry_if_exception_type,
@@ -15,12 +14,10 @@ from tenacity import (
     wait_none,
 )
 
-from agent_service.config import Settings
+import agent_service.llm.bound_client as bound_client_module
 from agent_service.llm import LLMService, dump_payload, message_payload
-from agent_service.llm.bound_client import BoundChatClient
+from agent_service.llm.bound_client import BoundChatClient, build_chat_client
 from agent_service.llm.payloads import token_usage_from_texts
-from agent_service.llm.prompts import resolve_prompt
-from agent_service.llm.service import build_llm_service
 
 
 class StubChatClient:
@@ -30,14 +27,6 @@ class StubChatClient:
     def __init__(self, responses: list[AIMessage | Exception]) -> None:
         self._responses = list(responses)
         self.calls = 0
-
-    def invoke(  # pragma: no cover - protocol compatibility only
-        self,
-        messages,
-        tools,
-        config: RunnableConfig | None = None,
-    ) -> AIMessage:
-        raise AssertionError("sync invoke should not be used")
 
     async def ainvoke(  # type: ignore[no-untyped-def]
         self,
@@ -54,22 +43,9 @@ class StubChatClient:
         return item
 
 
-class NoWaitLLMService(LLMService):
-    def _build_retrying(self) -> AsyncRetrying:
-        return AsyncRetrying(
-            stop=stop_after_attempt(max(1, self._max_retries + 1)),
-            wait=wait_none(),
-            retry=retry_if_exception_type((TimeoutError,)),
-            reraise=True,
-        )
-
-
 class SlowChatClient:
     provider = "test"
     model = "deepseek-chat"
-
-    def invoke(self, messages, tools, config: RunnableConfig | None = None) -> AIMessage:  # pragma: no cover
-        raise AssertionError("sync invoke should not be used")
 
     async def ainvoke(self, messages, tools, config: RunnableConfig | None = None) -> AIMessage:  # type: ignore[no-untyped-def]
         await asyncio.sleep(0.06)
@@ -81,8 +57,7 @@ async def test_generate_turn_does_not_retry_non_timeout_errors() -> None:
     client = StubChatClient([ValueError("bad request")])
     service = LLMService(
         client=client,
-        prompt_name="conversation-tools",
-        prompt_version="v1",
+        system_prompt="你是一个测试助手。",
         timeout_seconds=0,
         max_retries=3,
     )
@@ -101,12 +76,23 @@ async def test_generate_turn_does_not_retry_non_timeout_errors() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generate_turn_retries_timeouts_and_tracks_attempts() -> None:
+async def test_generate_turn_retries_timeouts_and_tracks_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def build_no_wait_retrying(max_retries: int) -> AsyncRetrying:
+        return AsyncRetrying(
+            stop=stop_after_attempt(max(1, max_retries + 1)),
+            wait=wait_none(),
+            retry=retry_if_exception_type((TimeoutError, asyncio.TimeoutError)),
+            reraise=True,
+        )
+
+    monkeypatch.setattr(bound_client_module, "_build_retrying", build_no_wait_retrying)
+
     client = StubChatClient([TimeoutError(), AIMessage(content="done")])
-    service = NoWaitLLMService(
+    service = LLMService(
         client=client,
-        prompt_name="conversation-tools",
-        prompt_version="v1",
+        system_prompt="你是一个测试助手。",
         timeout_seconds=0,
         max_retries=2,
     )
@@ -128,8 +114,7 @@ async def test_generate_turn_uses_tiktoken_for_usage_fallback() -> None:
     client = StubChatClient([AIMessage(content="你好，世界")])
     service = LLMService(
         client=client,
-        prompt_name="conversation-tools",
-        prompt_version="v1",
+        system_prompt="你是一个测试助手。",
         timeout_seconds=0,
         max_retries=0,
     )
@@ -154,8 +139,7 @@ async def test_generate_turn_uses_tiktoken_for_usage_fallback() -> None:
 async def test_generate_turn_marks_timeout_failures() -> None:
     service = LLMService(
         client=SlowChatClient(),
-        prompt_name="conversation-tools",
-        prompt_version="v1",
+        system_prompt="你是一个测试助手。",
         timeout_seconds=0.01,
         max_retries=0,
     )
@@ -171,44 +155,31 @@ async def test_generate_turn_marks_timeout_failures() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generate_turn_normalizes_legacy_prompt_name() -> None:
+async def test_generate_turn_includes_system_prompt_in_request_payload() -> None:
     client = StubChatClient([AIMessage(content="done")])
     service = LLMService(
         client=client,
-        prompt_name="tool-agent",
-        prompt_version="v1",
+        system_prompt="你是一个测试助手。",
         timeout_seconds=0,
         max_retries=0,
     )
 
     turn = await service.generate_turn(
-        conversation_id="conv-legacy-prompt",
+        conversation_id="conv-system-prompt",
         messages=[HumanMessage(content="hello")],
         tools=[],
     )
 
-    assert turn.trace.prompt_name == "conversation-tools"
-    assert turn.trace.request_payload["conversation_id"] == "conv-legacy-prompt"
+    request_messages = turn.trace.request_payload["messages"]
+    assert "system" in dump_payload(request_messages[0])
+    assert "你是一个测试助手。" in dump_payload(request_messages[0])
 
 
-def test_resolve_prompt_supports_legacy_aliases() -> None:
-    canonical = resolve_prompt("conversation-tools", "v1")
-    legacy = resolve_prompt("tool-agent", "v1")
-    direct = resolve_prompt("direct-agent", "v1")
-
-    assert legacy == canonical
-    assert legacy.name == "conversation-tools"
-    assert direct.name == "conversation-direct"
-
-
-def test_build_llm_service_constructs_chatdeepseek_directly(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_build_chat_client_constructs_chatdeepseek_directly(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     recorded: dict[str, object] = {}
 
     class RecordingBoundModel:
         async def ainvoke(self, messages, config: RunnableConfig | None = None):  # pragma: no cover
-            return AIMessage(content="ok")
-
-        def invoke(self, messages, config: RunnableConfig | None = None):  # pragma: no cover
             return AIMessage(content="ok")
 
     class RecordingChatDeepSeek:
@@ -221,27 +192,21 @@ def test_build_llm_service_constructs_chatdeepseek_directly(monkeypatch) -> None
         async def ainvoke(self, messages, config: RunnableConfig | None = None):  # pragma: no cover
             return AIMessage(content="ok")
 
-        def invoke(self, messages, config: RunnableConfig | None = None):  # pragma: no cover
-            return AIMessage(content="ok")
-
     fake_module = types.ModuleType("langchain_deepseek")
     fake_module.ChatDeepSeek = RecordingChatDeepSeek
     monkeypatch.setitem(sys.modules, "langchain_deepseek", fake_module)
 
-    settings = Settings(
+    client = build_chat_client(
         llm_provider="deepseek",
         llm_model="deepseek-reasoner",
         llm_timeout_seconds=7.5,
         llm_max_retries=3,
-        deepseek_api_key=SecretStr("sk-test"),
+        deepseek_api_key="sk-test",
     )
 
-    service = build_llm_service(settings)
-
-    assert isinstance(service, LLMService)
-    assert isinstance(service._client, BoundChatClient)  # type: ignore[attr-defined]
-    assert service._client.provider == "deepseek"  # type: ignore[attr-defined]
-    assert service._client.model == "deepseek-reasoner"  # type: ignore[attr-defined]
+    assert isinstance(client, BoundChatClient)
+    assert client.provider == "deepseek"
+    assert client.model == "deepseek-reasoner"
     assert recorded == {
         "api_key": "sk-test",
         "model": "deepseek-reasoner",
@@ -255,9 +220,6 @@ def test_build_llm_service_constructs_chatdeepseek_directly(monkeypatch) -> None
 def test_bound_chat_client_caps_bound_model_cache() -> None:
     class FakeBoundModel:
         async def ainvoke(self, messages, config=None):  # pragma: no cover
-            return AIMessage(content="ok")
-
-        def invoke(self, messages, config=None):  # pragma: no cover
             return AIMessage(content="ok")
 
     class FakeChatModel:

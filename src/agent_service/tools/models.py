@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,10 +22,18 @@ class ToolResult(BaseModel):
 
 
 @dataclass(slots=True, frozen=True)
+class ApprovalRequirement:
+    reason: str
+    risk_level: str = "low"
+    display_payload: dict[str, object] | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class ToolPolicy:
     tool_name: str
     approval_required: bool = False
     risk_level: str = "low"
+    approval_evaluator: Callable[[dict[str, Any]], ApprovalRequirement | None] | None = None
 
 
 @dataclass(slots=True, frozen=True)

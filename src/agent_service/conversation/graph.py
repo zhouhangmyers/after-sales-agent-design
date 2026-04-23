@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any, Literal
+from typing import Literal
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, StreamPart
@@ -40,15 +40,22 @@ class ConversationGraph:
         self._graph = builder.compile(checkpointer=checkpointer)
 
     @staticmethod
-    def _build_config(conversation_id: str) -> dict[str, dict[str, str]]:
-        return {"configurable": {"thread_id": conversation_id}}
+    def _build_config(run_id: str) -> dict[str, dict[str, str]]:
+        return {"configurable": {"thread_id": run_id}}
 
     @staticmethod
-    def _build_turn_input(message: str) -> ConversationState:
+    def _build_turn_input(
+        *,
+        session_id: str,
+        history_messages: list[BaseMessage],
+        message: str,
+    ) -> ConversationState:
         return {
+            "session_id": session_id,
+            "input_message": message,
             "status": "completed",
             "turn_step": 0,
-            "messages": [HumanMessage(content=message)],
+            "messages": [*history_messages, HumanMessage(content=message)],
             "pending_tool_call": None,
             "pending_action": None,
             "last_reply": None,
@@ -62,7 +69,6 @@ class ConversationGraph:
             update={
                 "last_reply": None,
                 "error_code": None,
-                "usage": zero_usage(),
             },
             resume=decision,
         )
@@ -86,44 +92,26 @@ class ConversationGraph:
             stream_tokens=stream_tokens,
         )
 
-    async def run(
-        self,
-        *,
-        llm_service: LLMService,
-        tool_executor: InlineToolExecutor,
-        conversation_id: str,
-        message: str,
-        request_id: str,
-        max_steps: int,
-        approval_timeout_seconds: int,
-    ) -> ConversationState | dict[str, Any]:
-        return await self._graph.ainvoke(
-            self._build_turn_input(message),
-            config=self._build_config(conversation_id),
-            context=self._build_context(
-                llm_service=llm_service,
-                tool_executor=tool_executor,
-                max_steps=max_steps,
-                approval_timeout_seconds=approval_timeout_seconds,
-                request_id=request_id,
-                stream_tokens=False,
-            ),
-        )
-
     async def stream(
         self,
         *,
         llm_service: LLMService,
         tool_executor: InlineToolExecutor,
-        conversation_id: str,
+        run_id: str,
+        session_id: str,
+        history_messages: list[BaseMessage],
         message: str,
         request_id: str,
         max_steps: int,
         approval_timeout_seconds: int,
     ) -> AsyncIterator[StreamPart]:
         async for part in self._graph.astream(
-            self._build_turn_input(message),
-            config=self._build_config(conversation_id),
+            self._build_turn_input(
+                session_id=session_id,
+                history_messages=history_messages,
+                message=message,
+            ),
+            config=self._build_config(run_id),
             context=self._build_context(
                 llm_service=llm_service,
                 tool_executor=tool_executor,
@@ -137,19 +125,19 @@ class ConversationGraph:
         ):
             yield part
 
-    async def resume(
+    async def stream_resume(
         self,
         *,
         llm_service: LLMService,
         tool_executor: InlineToolExecutor,
-        conversation_id: str,
+        run_id: str,
         decision: Literal["approved", "rejected"],
         request_id: str,
         max_steps: int,
         approval_timeout_seconds: int,
-    ) -> ConversationState | dict[str, Any]:
-        config = await self._validated_resume_config(conversation_id=conversation_id)
-        return await self._graph.ainvoke(
+    ) -> AsyncIterator[StreamPart]:
+        config = await self._validated_resume_config(run_id=run_id)
+        async for part in self._graph.astream(
             self._build_resume_input(decision=decision),
             config=config,
             context=self._build_context(
@@ -158,20 +146,23 @@ class ConversationGraph:
                 max_steps=max_steps,
                 approval_timeout_seconds=approval_timeout_seconds,
                 request_id=request_id,
-                stream_tokens=False,
+                stream_tokens=True,
             ),
-        )
+            stream_mode=["messages", "custom"],
+            version="v2",
+        ):
+            yield part
 
-    async def get_state(self, *, conversation_id: str) -> dict[str, Any] | None:
-        snapshot = await self._graph.aget_state(self._build_config(conversation_id))
+    async def get_state(self, *, run_id: str) -> dict[str, object] | None:
+        snapshot = await self._graph.aget_state(self._build_config(run_id))
         return snapshot.values or None
 
     async def _validated_resume_config(
         self,
         *,
-        conversation_id: str,
+        run_id: str,
     ) -> dict[str, dict[str, str]]:
-        config = self._build_config(conversation_id)
+        config = self._build_config(run_id)
         snapshot = await self._graph.aget_state(config)
         state = snapshot.values or {}
         if (

@@ -6,8 +6,8 @@ from typing import Annotated, Any, Protocol, TypedDict
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
-from agent_service.llm.types import TokenUsage
 from agent_service.llm.service import LLMService
+from agent_service.llm.types import TokenUsage
 from agent_service.tools.inline import InlineToolExecutor
 
 ConversationStatus = str
@@ -24,10 +24,12 @@ class ToolCallIntent(TypedDict):
 class PendingAction(TypedDict):
     kind: str
     tool_call_id: str | None
+    approval_id: str | None
     tool_name: str
     tool_arguments: dict[str, Any]
     reason: str
     risk_level: str
+    display_payload: dict[str, Any]
     deadline: str | None
 
 
@@ -38,6 +40,8 @@ class UsageSnapshot(TypedDict):
 
 
 class ConversationState(TypedDict):
+    session_id: str
+    input_message: str | None
     status: ConversationStatus
     turn_step: int
     messages: Annotated[list[BaseMessage], add_messages]
@@ -128,18 +132,22 @@ def make_tool_call_intent(
 def make_pending_action(
     *,
     tool_call_id: str | None,
+    approval_id: str | None,
     tool_name: str,
     tool_arguments: dict[str, Any],
     reason: str,
     risk_level: str,
+    display_payload: dict[str, Any],
     deadline: str | None,
 ) -> PendingAction:
     return {
         "kind": "tool_approval",
         "tool_call_id": tool_call_id,
+        "approval_id": approval_id,
         "tool_name": tool_name,
         "tool_arguments": tool_arguments,
         "reason": reason,
         "risk_level": risk_level,
+        "display_payload": display_payload,
         "deadline": deadline,
     }

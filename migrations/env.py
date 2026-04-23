@@ -6,7 +6,12 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from agent_service.db.base import Base
+from business_service.after_sales.infrastructure.persistence.sqlalchemy import (
+    models as _after_sales_models,
+)
+from business_service.after_sales.infrastructure.persistence.sqlalchemy.session import Base
+
+_ = _after_sales_models
 
 # Alembic 的全局配置对象，会读取 alembic.ini 里的内容。
 config = context.config

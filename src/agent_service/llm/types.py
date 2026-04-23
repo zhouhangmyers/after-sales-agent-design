@@ -15,7 +15,7 @@ class TokenUsage(BaseModel):
     total_tokens: int = 0
 
     @classmethod
-    def combine(cls, usages: list["TokenUsage"]) -> "TokenUsage":
+    def combine(cls, usages: list[TokenUsage]) -> TokenUsage:
         return cls(
             prompt_tokens=sum(item.prompt_tokens for item in usages),
             completion_tokens=sum(item.completion_tokens for item in usages),
@@ -34,8 +34,6 @@ class AssistantDecision(BaseModel):
 class LLMCallTrace(BaseModel):
     provider: str
     model: str
-    prompt_name: str
-    prompt_version: str
     request_payload: dict[str, Any] = Field(default_factory=dict)
     raw_response: dict[str, Any] | None = None
     decision: AssistantDecision | None = None
@@ -53,13 +51,6 @@ class LLMTurn:
 
 
 class RunnableMessageModel(Protocol):
-    def invoke(
-        self,
-        messages: list[BaseMessage],
-        config: RunnableConfig | None = None,
-    ) -> BaseMessage:
-        ...
-
     async def ainvoke(
         self,
         messages: list[BaseMessage],
@@ -76,14 +67,6 @@ class ToolBindableChatModel(RunnableMessageModel, Protocol):
 class ChatClient(Protocol):
     provider: str
     model: str
-
-    def invoke(
-        self,
-        messages: list[BaseMessage],
-        tools: list[BaseTool],
-        config: RunnableConfig | None = None,
-    ) -> AIMessage:
-        ...
 
     async def ainvoke(
         self,

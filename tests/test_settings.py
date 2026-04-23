@@ -2,40 +2,36 @@ from __future__ import annotations
 
 import pytest
 
-from agent_service.config import Settings
-from agent_service.main import build_langgraph_checkpointer
+from app_api.settings import AppSettings
 
 
-def test_settings_test_env_allows_missing_langgraph_postgres_url() -> None:
-    settings = Settings(
+def test_test_env_allows_missing_runtime_database_url() -> None:
+    settings = AppSettings(
         app_env="test",
-        langgraph_postgres_url=None,
+        agent_runtime_database_url=None,
         api_key=None,
     )
 
     assert settings.is_test is True
-    assert settings.langgraph_postgres_url is None
+    assert settings.agent_runtime_database_url is None
 
 
-def test_build_langgraph_checkpointer_requires_postgres_outside_test() -> None:
-    settings = Settings(
-        app_env="dev",
-        langgraph_postgres_url=None,
-        api_key=None,
-    )
-
-    with pytest.raises(RuntimeError, match="LANGGRAPH_POSTGRES_URL is required when APP_ENV is not test"):
-        build_langgraph_checkpointer(settings)
-
-
-def test_production_settings_require_api_key_and_cors() -> None:
+def test_production_settings_require_api_key_cors_and_runtime_database() -> None:
     with pytest.raises(ValueError, match="API_KEY is required when APP_ENV=production"):
-        Settings(
+        AppSettings(
             app_env="production",
-            langgraph_postgres_url="postgresql://localhost/langgraph",
+            agent_runtime_database_url="postgresql://localhost/agent-runtime",
             api_key=None,
         )
 
 
-def test_settings_default_prompt_name_is_conversation_tools() -> None:
-    assert Settings().prompt_name == "conversation-tools"
+def test_settings_default_business_database_url_points_to_local_sqlite() -> None:
+    assert AppSettings(app_env="test").business_database_url.endswith("after_sales_mvp.db")
+
+
+def test_settings_config_warnings_detect_close_match_typo(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTO_REATE_SCHEMA", "true")
+
+    warnings = AppSettings(app_env="test").config_warnings()
+
+    assert "unknown config key `AUTO_REATE_SCHEMA`; did you mean `AUTO_CREATE_SCHEMA`?" in warnings

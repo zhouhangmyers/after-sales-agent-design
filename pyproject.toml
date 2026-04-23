@@ -76,7 +76,7 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 # FastAPI 依赖注入的标准写法会触发 B008，这里按路由层显式豁免。
-"src/agent_service/api/routers/*.py" = ["B008"]
+"src/app_api/routers/*.py" = ["B008"]
 
 [tool.mypy]
 # strict 模式启用所有核心严格检查（untyped defs、no Any、warn_return_any 等）。

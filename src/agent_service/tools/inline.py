@@ -28,9 +28,6 @@ class InlineToolExecutor:
         self._tools = {tool.name: tool for tool in (tools or [])}
         self._tool_policies = dict(tool_policies or {})
 
-    def close(self) -> None:
-        return None
-
     def get_tools(self) -> list[BaseTool]:
         return list(self._tools.values())
 
