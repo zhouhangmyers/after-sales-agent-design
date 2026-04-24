@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agent-orchestrator-platform"
 version = "0.1.0"
-description = "LangGraph-driven chat backend built with FastAPI."
+description = "Teaching-first agent backend built with FastAPI, LangChain v1, and LangGraph."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -31,10 +31,14 @@ dependencies = [
     "langgraph>=1,<2",
     # LangGraph PostgreSQL checkpointer，用于 durable workflow state。
     "langgraph-checkpoint-postgres>=3,<4",
+    # MCP 适配器，把外部 MCP server 暴露的工具转换为 LangChain tools。
+    "langchain-mcp-adapters>=0.1,<1",
     # DeepSeek 的 LangChain 官方集成包。
     "langchain-deepseek>=1,<2",
-    # 标准重试库，用于受控的 LLM timeout retry。
-    "tenacity>=8,<9",
+    # OpenAI 的 LangChain 官方集成包，避免依赖 DeepSeek 间接带入。
+    "langchain-openai>=1,<2",
+    # SQLite async driver，用于本地开发/测试的 SQLAlchemy AsyncSession。
+    "aiosqlite>=0.20,<1",
     # 标准 tokenizer，用于更准确的 token 统计 fallback。
     "tiktoken>=0.9,<1",
 ]

@@ -2,112 +2,115 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app_api.deps import get_after_sales_repository, require_api_key
+from app_api.deps import get_after_sales_service, require_api_key
+from business_service.after_sales.application.services.after_sales_service import (
+    AfterSalesService,
+)
 from business_service.after_sales.domain.entities import (
     AuditLogRead,
     CustomerRead,
+    OrderLookupInput,
     OrderRead,
     PolicyArticleRead,
+    PolicySearchInput,
     RefundRequestCreate,
     RefundRequestRead,
     ShipmentRead,
     TicketCreate,
+    TicketLookupInput,
     TicketRead,
-)
-from business_service.after_sales.infrastructure.persistence.sqlalchemy.repositories import (
-    SqlAlchemyAfterSalesRepository,
 )
 
 router = APIRouter(prefix="/api/after-sales", tags=["after-sales-resources"])
 
 
 @router.get("/orders/{order_id}", response_model=OrderRead)
-def get_order(
+async def get_order(
     order_id: str,
-    repository: SqlAlchemyAfterSalesRepository = Depends(get_after_sales_repository),
+    service: AfterSalesService = Depends(get_after_sales_service),
     _: None = Depends(require_api_key),
 ) -> OrderRead:
-    order = repository.get_order(order_id)
-    if order is None:
-        raise HTTPException(status_code=404, detail=f"order not found: {order_id}")
-    return order
+    try:
+        return await service.get_order_detail(OrderLookupInput(order_id=order_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/orders/{order_id}/shipment", response_model=ShipmentRead)
-def get_shipment(
+async def get_shipment(
     order_id: str,
-    repository: SqlAlchemyAfterSalesRepository = Depends(get_after_sales_repository),
+    service: AfterSalesService = Depends(get_after_sales_service),
     _: None = Depends(require_api_key),
 ) -> ShipmentRead:
-    shipment = repository.get_shipment(order_id)
-    if shipment is None:
-        raise HTTPException(status_code=404, detail=f"shipment not found for order: {order_id}")
-    return shipment
+    try:
+        return await service.get_shipment_detail(OrderLookupInput(order_id=order_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/customers/{customer_id}", response_model=CustomerRead)
-def get_customer(
+async def get_customer(
     customer_id: str,
-    repository: SqlAlchemyAfterSalesRepository = Depends(get_after_sales_repository),
+    service: AfterSalesService = Depends(get_after_sales_service),
     _: None = Depends(require_api_key),
 ) -> CustomerRead:
-    customer = repository.get_customer(customer_id)
-    if customer is None:
-        raise HTTPException(status_code=404, detail=f"customer not found: {customer_id}")
-    return customer
+    try:
+        return await service.get_customer_detail(customer_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/policies/search", response_model=list[PolicyArticleRead])
-def search_policies(
+async def search_policies(
     q: str = Query(..., min_length=1),
-    repository: SqlAlchemyAfterSalesRepository = Depends(get_after_sales_repository),
+    service: AfterSalesService = Depends(get_after_sales_service),
     _: None = Depends(require_api_key),
 ) -> list[PolicyArticleRead]:
-    return repository.search_policies(q)
+    return await service.search_after_sales_policy(PolicySearchInput(query=q))
 
 
 @router.post("/tickets", response_model=TicketRead)
-def create_ticket(
+async def create_ticket(
     payload: TicketCreate,
-    repository: SqlAlchemyAfterSalesRepository = Depends(get_after_sales_repository),
+    service: AfterSalesService = Depends(get_after_sales_service),
     _: None = Depends(require_api_key),
 ) -> TicketRead:
     try:
-        ticket = repository.create_ticket(payload)
+        ticket = await service.create_ticket(payload)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ticket
 
 
 @router.get("/tickets/{ticket_id}", response_model=TicketRead)
-def get_ticket(
+async def get_ticket(
     ticket_id: str,
-    repository: SqlAlchemyAfterSalesRepository = Depends(get_after_sales_repository),
+    service: AfterSalesService = Depends(get_after_sales_service),
     _: None = Depends(require_api_key),
 ) -> TicketRead:
-    ticket = repository.get_ticket(ticket_id)
-    if ticket is None:
-        raise HTTPException(status_code=404, detail=f"ticket not found: {ticket_id}")
-    return ticket
+    try:
+        return await service.get_ticket_detail(TicketLookupInput(ticket_id=ticket_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/refund-requests", response_model=RefundRequestRead)
-def create_refund_request(
+async def create_refund_request(
     payload: RefundRequestCreate,
-    repository: SqlAlchemyAfterSalesRepository = Depends(get_after_sales_repository),
+    service: AfterSalesService = Depends(get_after_sales_service),
     _: None = Depends(require_api_key),
 ) -> RefundRequestRead:
     try:
-        refund = repository.create_refund_request(payload)
+        refund = await service.create_refund_request(payload)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return refund
 
 
 @router.get("/audit-logs", response_model=list[AuditLogRead])
-def get_audit_logs(
+async def get_audit_logs(
     run_id: str = Query(..., min_length=1),
-    repository: SqlAlchemyAfterSalesRepository = Depends(get_after_sales_repository),
+    service: AfterSalesService = Depends(get_after_sales_service),
     _: None = Depends(require_api_key),
 ) -> list[AuditLogRead]:
-    return repository.list_audit_logs(run_id)
+    return await service.list_audit_logs(run_id)

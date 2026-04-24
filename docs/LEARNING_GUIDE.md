@@ -1,1410 +1,2539 @@
-# 从零读懂这个 Agent 售后项目
+# 从 0 到 1 开发售后 Agent 后端
 
-这篇文档给 0 基础或接近 0 基础的学习者看。你不需要一开始就懂 FastAPI、SQLAlchemy、LangGraph、tool calling、checkpoint 或 Agent 架构。
+这份指南不是代码评审，也不是简单解释现有目录。它把当前项目反向拆成一门实战课程，目标是让有基础代码经验、但没有系统 Python 后端和 Agent 开发经验的学习者，从空目录开始，一步一步开发出一个接近当前仓库主线的售后客服 Agent 后端。
 
-你只需要按人的自然理解顺序来：
+课程主线采用当前项目风格：
 
 ```text
-先看到系统能做什么
-  -> 再调用几个接口
-  -> 再追踪一次请求经过哪些文件
-  -> 最后才下钻到 LangGraph、数据库、状态恢复这些底层细节
+FastAPI
+  -> app_api 负责 HTTP API 和依赖装配
+  -> business_service.after_sales 负责售后业务
+  -> agent_service 负责 Agent contract、LLM、runtime、state store、MCP adapter
+  -> SQLAlchemy + Alembic 负责业务数据
+  -> LangChain v1 create_agent + LangGraph checkpoint 负责 Agent 执行、暂停和恢复
 ```
 
-不要从 `src/agent_service/conversation/nodes.py` 开始读。那是比较底层的流程节点，第一次看会很吃力。
+学习时要守住一个核心边界：
 
-这个项目可以先理解成：
+```text
+business_service 不依赖 agent_service
+agent_service 不依赖 business_service
+两者只在 app_api 的 adapter/composition 层相遇
+```
 
-> 一个“售后客服 Agent 后端”。用户可以用自然语言查订单、查物流、建工单、申请退款。如果退款风险较高，系统会暂停，等待人工审批后再继续执行。
-
-学完这篇文档，你应该能说清楚：
-
-1. 一个 HTTP 请求从哪里进入项目。
-2. 普通后端 API 和 Agent API 有什么区别。
-3. Agent 如何把用户一句话变成一次工具调用。
-4. 为什么高风险退款要暂停，审批后再恢复。
-5. 为什么项目要拆成 `app_api`、`business_service.after_sales`、`agent_service`。
+这样做的意义是：售后业务能力可以独立作为普通后端 API 使用，Agent 只是这些业务能力的一种智能入口。
 
 ---
 
-## 0. 这份文档的正确打开方式
+## 项目反向拆解
 
-这个项目不能按“目录从上到下”读，也不能按“底层到上层”读。
+### 1. 这个项目最终要做成什么
 
-对新手来说，最舒服的顺序是：
+项目一句话介绍：
 
-```text
-第 1 层：用户能看到的东西
-  Swagger、curl、JSON、SSE 事件
+> 这是一个教学优先的售后客服 Agent 后端，用 `FastAPI + SQLAlchemy + LangChain + LangGraph` 实现查订单、查物流、建工单、退款申请和人工审批恢复执行。
 
-第 2 层：API 入口
-  FastAPI router、请求模型、响应模型
+用户会如何使用它：
 
-第 3 层：售后业务
-  订单、物流、工单、退款、审批、审计日志
+- 运营或客服可以通过前端工作台输入自然语言，例如“帮我查一下订单 ORD123 的状态”。
+- 后端也可以直接被 curl、Postman 或其他系统调用。
+- 普通业务查询可以直接走 REST API。
+- 自然语言任务走 Agent API，由 Agent 判断要不要调用工具。
+- 高风险退款会先返回 `awaiting_action`，由人工审批后继续执行。
 
-第 4 层：Agent 运行时
-  LLM、tool calling、LangGraph、状态存储、暂停恢复
+后端提供的能力：
 
-第 5 层：数据库和测试
-  表结构、仓储、种子数据、端到端测试
-```
+- 健康检查：`GET /health`
+- Agent 目录：`GET /api/agents`
+- 工具目录：`GET /api/agents/{capability_id}/tools`
+- 同步 Agent 运行：`POST /api/after-sales/runs`
+- 流式 Agent 运行：`POST /api/after-sales/runs/stream`
+- 审批动作：`POST /api/after-sales/actions`
+- 运行状态查询：`GET /api/after-sales/runs/{run_id}`
+- 售后资源 API：订单、物流、客户、政策、工单、退款、审计日志。
 
-这叫从上层往下层读。先看结果，再看入口，再看业务，再看 Agent 内部。
+Agent 扮演的角色：
 
-如果你第一次学习，先不要纠结这些问题：
+- 理解用户自然语言。
+- 根据系统提示词和工具描述选择一个工具。
+- 把用户输入整理成工具参数。
+- 读取工具返回结果，组织成简洁的中文回复。
+- 遇到需要审批的工具时暂停执行，等待人工动作。
 
-- LangGraph 的每个节点怎么实现。
-- SQLAlchemy 的每个字段为什么这样写。
-- checkpoint 具体怎么存。
-- LLM client 怎么重试。
-- 为什么某个类用 dataclass，某个类用 Pydantic。
+Tool 扮演的角色：
 
-这些都放到后半部分。前面先建立“请求链路”的感觉。
+- Tool 不负责“思考”，只负责执行确定的业务动作。
+- 本项目中的本地工具包括 `get_order_detail`、`get_shipment_detail`、`create_ticket`、`get_ticket_detail`、`submit_refund_request`、`search_after_sales_policy`。
+- 可选 MCP 工具会被适配成同一种 `ToolSpec`，并命名成 `mcp_{server}_{tool}`。
+
+项目完成后的最终效果：
+
+- 学习者可以启动后端，访问 `http://127.0.0.1:8000/docs`。
+- 可以调用 `/api/after-sales/orders/ORD123` 获取订单。
+- 可以调用 `/api/after-sales/runs` 让 Agent 自动查单。
+- 可以调用 `/api/after-sales/runs/stream` 看到 SSE 事件。
+- 可以发起高风险退款，看到 `action.required`。
+- 可以调用 `/api/after-sales/actions` 审批后恢复执行。
+
+### 2. 从 0 开发应该分成哪些阶段
+
+推荐拆成 12 个阶段：
+
+1. 开发前准备：安装 Python 3.12、uv、Git、Docker、curl/Postman、IDE。
+2. 创建项目骨架：使用 `src` layout，建好后端、业务、Agent、测试、迁移目录。
+3. 搭建 FastAPI 服务：实现 `create_app()`、lifespan、CORS、`/health`。
+4. 设计配置系统：用 `pydantic-settings` 读取 `.env`，集中管理 DB、LLM、MCP、API key。
+5. 售后业务领域建模：定义订单、客户、物流、工单、退款、审批和审计日志 schema。
+6. Repository + Unit of Work：用协议隔离业务服务和 SQLAlchemy，用 UoW 管事务。
+7. 普通业务 API：先把售后业务作为传统 REST API 跑通。
+8. LLM Client 封装：支持 DeepSeek/OpenAI，并保留 mock 模型用于测试。
+9. Agent Contract 和 ToolSpec：定义 runtime 和业务工具之间的窄接口。
+10. 售后 Agent Definition：把业务服务包装成工具，并设计 prompt。
+11. LangChain/LangGraph Runtime：实现工具调用、审批暂停、恢复、SSE、session transcript。
+12. API 集成、测试、部署与复盘：补齐路由、pytest、ruff、mypy、seed、Alembic、compose、面试表达。
+
+### 3. 最小可运行版本 MVP 是什么
+
+MVP 只做四件事：
+
+- 启动一个 FastAPI 服务。
+- 暴露 `GET /health`。
+- 暴露 `POST /api/after-sales/runs`。
+- 先用 mock LLM 或 deterministic chat model 调用一个本地工具 `get_order_detail`。
+
+MVP 推荐只用 SQLite 和一条订单假数据。不要一开始就实现完整审批、SSE、MCP、PostgreSQL checkpoint 和前端。
+
+为什么先做 MVP：
+
+- 新手最容易卡在“装了很多库，但不知道请求怎么跑起来”。
+- MVP 可以最快跑通 `HTTP -> schema -> service -> tool -> agent response`。
+- 先得到一个正反馈，再逐步引入数据库、审批和 LangGraph checkpoint，学习成本更可控。
 
 ---
 
-## 1. 先用一句话认识三层架构
+## 第 0 章：开发前准备
 
-这个项目有三块主代码：
+### 本章目标
 
-| 目录 | 生活化比喻 | 新手先记住 |
-| --- | --- | --- |
-| `src/app_api` | 门口接待员 | 接 HTTP 请求，把请求交给合适的人 |
-| `src/business_service/after_sales` | 售后业务办公室 | 真正懂订单、物流、退款、审批规则 |
-| `src/agent_service` | 通用 Agent 发动机 | 不懂售后，只负责让 LLM、工具、流程跑起来 |
+准备好从 0 开发项目所需的工具和基础概念。学完后，学习者能创建虚拟环境、安装依赖、运行 Python 命令、理解 `.env`、理解后端服务和 Agent 的关系。
 
-最重要的设计点：
+### 为什么要做这一步
 
-```text
-agent_service 不依赖 business_service.after_sales
-```
+Python 后端和 Agent 项目会同时涉及依赖管理、环境变量、HTTP 服务、数据库、LLM API key 和本地开发工具。如果前置环境不稳定，后面每一章都会被安装问题打断。
 
-也就是说，`agent_service` 这个 Agent 发动机不知道什么是订单、退款、工单。售后业务层把自己的能力包装成 `AgentCapability`，交给 Agent 发动机运行。
+### 本章要创建或修改哪些文件
 
-依赖方向大致是：
-
-```mermaid
-flowchart LR
-    app_api --> business_service
-    app_api --> agent_service
-    business_service --> agent_service
-    agent_service -.不反向依赖.-> business_service
-```
-
-这不是假隔离。代码里 `agent_service` 只依赖自己的 contracts、conversation、tools、llm、state_store 等模块，不 import 售后业务。
-
----
-
-## 2. 第一步：先把系统跑起来
-
-进入项目根目录：
-
-```bash
-cd /home/zhouhangmyers/python/agent-orchestrator-platform
-```
-
-安装依赖：
-
-```bash
-uv sync --extra dev
-```
-
-写入演示数据：
-
-```bash
-make seed
-```
-
-启动后端：
-
-```bash
-make start
-```
-
-打开浏览器：
+本章暂时不写业务代码，只准备这些文件：
 
 ```text
-http://127.0.0.1:8000/docs
+agent-orchestrator-platform/
+  .env.example
+  README.md
+  pyproject.toml
 ```
 
-这个页面叫 Swagger UI。你可以把它理解成“后端接口菜单”。
+### 推荐目录结构
 
-### 2.1 最小环境变量
+开发前先知道最终项目会长成这样：
 
-本地学习时，最小配置类似：
+```text
+agent-orchestrator-platform/
+  src/
+    app_api/
+    agent_service/
+    business_service/
+  tests/
+  migrations/
+  scripts/
+  docs/
+  frontend/
+  .env.example
+  pyproject.toml
+  Makefile
+  compose.yaml
+```
+
+### 关键概念讲解
+
+后端服务：运行在服务器上的程序，接收请求，处理业务，返回结果。
+
+API：系统对外暴露的调用入口。比如 `GET /health` 是健康检查 API。
+
+HTTP request / response：客户端发送 request，服务端返回 response。request 里有路径、方法、header、body；response 里有状态码和 JSON。
+
+JSON：前后端常用的数据格式，例如 `{"message": "hello"}`。
+
+环境变量：不写死在代码里的配置，例如 API key、数据库地址。
+
+虚拟环境：给一个项目隔离 Python 依赖，避免多个项目依赖互相污染。
+
+依赖管理：记录项目需要哪些第三方包。本项目使用 `uv` 和 `pyproject.toml`。
+
+LLM API：大模型服务接口，例如 DeepSeek 或 OpenAI 的 chat model。
+
+Agent：能根据目标选择工具并组织执行流程的智能体。
+
+Tool：Agent 可以调用的确定性函数，本项目中就是售后业务能力的包装。
+
+### 开发步骤
+
+1. 安装 Python 3.12。
+2. 安装 `uv`。
+3. 安装 Git。
+4. 安装 Docker Desktop 或 Docker Engine。
+5. 准备 VS Code 或 Cursor。
+6. 准备 curl 或 Postman。
+7. 确认命令可用。
+
+### 示例代码
+
+```bash
+python --version
+uv --version
+git --version
+docker --version
+curl --version
+```
+
+创建 `.env.example`：
 
 ```env
 APP_ENV=dev
+CORS_ALLOWED_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
 BUSINESS_DATABASE_URL=sqlite+pysqlite:///./after_sales_mvp.db
+AGENT_RUNTIME_DATABASE_URL=
 AUTO_CREATE_SCHEMA=true
-
 LLM_PROVIDER=deepseek
 LLM_MODEL=deepseek-chat
-DEEPSEEK_API_KEY=your_deepseek_api_key
-
-# 可选
-API_KEY=
-AGENT_RUNTIME_DATABASE_URL=
-LLM_TIMEOUT_SECONDS=5
-LLM_MAX_RETRIES=1
+LLM_TIMEOUT_SECONDS=30.0
+LLM_MAX_RETRIES=2
+DEEPSEEK_API_KEY=replace-me
+OPENAI_API_KEY=
 MAX_STEPS=4
 APPROVAL_TIMEOUT_SECONDS=900
+MCP_SERVERS={}
 ```
 
-先只记住两个数据库变量：
-
-- `BUSINESS_DATABASE_URL`：业务数据库，存订单、物流、工单、退款、审批、审计日志。
-- `AGENT_RUNTIME_DATABASE_URL`：Agent 运行状态数据库，存 LangGraph checkpoint。不填时，本地开发使用内存版 state store。
-
-如果你设置了 `API_KEY`，所有业务接口都要带请求头：
+### 如何运行或验证
 
 ```bash
--H "X-API-Key: your_api_key"
+mkdir agent-orchestrator-platform
+cd agent-orchestrator-platform
+python -c "print('python ok')"
 ```
 
-如果没有设置 `API_KEY`，本地开发可以不传这个 header。
+如果能输出 `python ok`，说明 Python 可运行。
 
-### 2.2 健康检查
+### 常见错误
 
-先调用：
+- Python 版本低于 3.12：后续类型语法可能报错。
+- 没有激活虚拟环境：命令使用了系统 Python。
+- `.env` 里写了真实 key 但提交到 Git：这是安全问题，真实项目必须避免。
+- Docker 没启动：后面启动 PostgreSQL 会失败。
 
-```bash
-curl http://127.0.0.1:8000/health
-```
+### 面试时怎么讲
 
-正常结构类似：
+可以这样说：
 
-```json
-{
-  "status": "ok",
-  "runtime_store": {
-    "ok": true,
-    "backend": "in-memory",
-    "detail": null
-  },
-  "business_database": {
-    "ok": true,
-    "schema_ready": true,
-    "detail": null
-  },
-  "llm": {
-    "ok": true,
-    "provider": "deepseek",
-    "model": "deepseek-chat",
-    "detail": null
-  }
-}
-```
-
-如果 `status` 是 `degraded`，意思不是后端挂了，而是某个依赖不完整。常见原因是没有 LLM API key，或者数据库 schema 没准备好。
-
-再运行：
-
-```bash
-make doctor
-```
-
-`doctor` 会检查 runtime store、business database、LLM 配置和可疑环境变量。
-
-### 2.3 这一阶段你先看哪些文件
-
-只看这几个：
-
-```text
-Makefile
-src/app_api/main.py
-src/app_api/settings.py
-src/app_api/routers/health.py
-src/app_api/bootstrap.py
-```
-
-你现在只需要知道：
-
-- `main.py` 创建 FastAPI app。
-- `settings.py` 读取环境变量。
-- `health.py` 提供 `/health`。
-- `bootstrap.py` 负责把数据库、LLM、业务服务、Agent engine 装配起来。
-
-先不要看 `agent_service/conversation`。
+> 我会先把运行环境标准化，项目使用 Python 3.12 和 uv 管理依赖，敏感配置通过 `.env` 注入。这样代码、配置和运行环境分离，方便本地、测试和生产环境使用同一套代码。
 
 ---
 
-## 3. 第二步：先学普通后端 API
+## 第 1 章：从空目录创建项目骨架
 
-现在先不要碰 Agent。先理解普通资源接口。
+### 本章目标
 
-这些接口不需要 LLM，也不需要 LangGraph。它们只是读写业务数据库。
+从空文件夹创建项目基本结构，明确 API 层、业务层、Agent 层、测试和部署文件的位置。
 
-### 3.1 查询订单
+### 为什么要做这一步
+
+新手常见问题是所有代码都堆在一个 `main.py`。这个项目需要同时处理 HTTP、业务、Agent runtime、数据库和测试，所以必须从一开始把边界摆好。
+
+### 本章要创建或修改哪些文件
+
+```text
+pyproject.toml
+README.md
+.env.example
+Makefile
+src/app_api/__init__.py
+src/agent_service/__init__.py
+src/business_service/__init__.py
+tests/__init__.py
+```
+
+### 推荐目录结构
+
+```text
+agent-orchestrator-platform/
+  src/
+    app_api/
+      __init__.py
+      main.py
+      routers/
+      schemas/
+      services/
+    agent_service/
+      __init__.py
+      contracts/
+      infrastructure/
+      llm/
+    business_service/
+      __init__.py
+      after_sales/
+        domain/
+        application/
+        infrastructure/
+  tests/
+    __init__.py
+  scripts/
+  migrations/
+  docs/
+  .env.example
+  pyproject.toml
+  Makefile
+```
+
+### 关键概念讲解
+
+`src` layout：把项目包放在 `src/` 下，避免测试时误用当前目录里的未安装模块。
+
+`app_api`：FastAPI 入口、路由、HTTP schema、依赖注入和 composition root。
+
+`business_service`：业务核心，表达订单、物流、工单、退款、审批规则。
+
+`agent_service`：Agent 通用能力，表达 ToolSpec、AgentDefinition、runtime、LLM 和 state store。
+
+### 开发步骤
+
+1. 创建目录。
+2. 创建空的 `__init__.py`。
+3. 写 `pyproject.toml`。
+4. 写基础 `Makefile`。
+5. 写 README 的项目目标。
+
+### 示例代码
+
+`pyproject.toml`：
+
+```toml
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-orchestrator-platform"
+version = "0.1.0"
+description = "Teaching-first agent backend built with FastAPI, LangChain, and LangGraph."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2,<3",
+    "pydantic-settings>=2.0",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "pytest-asyncio>=0.24,<1",
+    "httpx>=0.27,<1",
+    "ruff>=0.9,<1",
+    "mypy>=1.11,<2",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+```
+
+`Makefile`：
+
+```makefile
+PYTHON ?= .venv/bin/python
+HOST ?= 127.0.0.1
+PORT ?= 8000
+
+.PHONY: start test
+
+start:
+	$(PYTHON) -m uvicorn app_api.main:create_app --factory --app-dir src --reload --host $(HOST) --port $(PORT)
+
+test:
+	$(PYTHON) -m pytest tests -q
+```
+
+### 如何运行或验证
+
+```bash
+uv sync --extra dev
+find src -maxdepth 3 -type d
+uv run python -c "import app_api, agent_service, business_service; print('imports ok')"
+```
+
+### 常见错误
+
+- 忘记配置 `pythonpath = ["src"]`，测试里 import 失败。
+- 目录建好了但没有 `__init__.py`，包导入不稳定。
+- 把业务代码直接放进 `app_api`，后面 Agent 适配会变混乱。
+
+### 面试时怎么讲
+
+可以这样说：
+
+> 我使用 `src` layout，并把系统分为 API 层、业务层和 Agent 层。API 层负责装配，业务层不依赖 Agent 框架，Agent 层也不依赖具体售后业务，这样后续替换 LangChain 或新增业务场景时影响范围更小。
+
+---
+
+## 第 2 章：搭建 FastAPI 服务
+
+### 本章目标
+
+创建一个可启动的 FastAPI 应用，实现 `/health`，为后续业务 API 和 Agent API 提供入口。
+
+### 为什么要做这一步
+
+所有后端功能最终都要通过 HTTP 暴露。先把 API 服务跑起来，可以尽早验证项目启动、路由注册、Swagger 文档和基本健康检查。
+
+### 本章要创建或修改哪些文件
+
+```text
+src/app_api/main.py
+src/app_api/routers/__init__.py
+src/app_api/routers/health.py
+```
+
+### 推荐目录结构
+
+```text
+src/app_api/
+  __init__.py
+  main.py
+  routers/
+    __init__.py
+    health.py
+```
+
+### 关键概念讲解
+
+FastAPI app：后端应用对象，负责注册路由和中间件。
+
+router：把一组相关接口放在一起，例如健康检查、售后资源、Agent runs。
+
+factory：`create_app()` 返回 app，测试时可以传入不同设置或 fake dependency。
+
+lifespan：应用启动和关闭时执行资源初始化和清理。
+
+### 开发步骤
+
+1. 创建 `health.py`。
+2. 创建 `create_app()`。
+3. 注册 health router。
+4. 用 uvicorn 启动。
+5. 打开 `/docs` 和 `/health` 验证。
+
+### 示例代码
+
+`src/app_api/routers/health.py`：
+
+```python
+from __future__ import annotations
+
+from fastapi import APIRouter
+
+# router 是一组 API 的集合，tags 会显示在 Swagger UI 中。
+router = APIRouter(tags=["health"])
+
+
+@router.get("/health")
+async def health() -> dict[str, str]:
+    # MVP 阶段先只返回 ok，后续再接数据库、LLM、MCP 状态。
+    return {"status": "ok"}
+```
+
+`src/app_api/main.py`：
+
+```python
+from __future__ import annotations
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app_api.routers.health import router as health_router
+
+
+def create_app() -> FastAPI:
+    # 使用 factory 方便测试时创建隔离 app。
+    app = FastAPI(title="After-Sales Agent API", version="1.0.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.include_router(health_router)
+    return app
+```
+
+### 如何运行或验证
+
+```bash
+uv run uvicorn app_api.main:create_app --factory --app-dir src --reload
+curl http://127.0.0.1:8000/health
+```
+
+预期：
+
+```json
+{"status":"ok"}
+```
+
+### 常见错误
+
+- `Error loading ASGI app`：通常是没有加 `--app-dir src`。
+- `/health` 返回 404：忘记 `app.include_router(health_router)`。
+- 浏览器跨域失败：前端请求时需要 CORS 中间件。
+
+### 面试时怎么讲
+
+可以这样说：
+
+> 我用 FastAPI factory 创建应用，并把路由拆到独立 router。这样应用启动、测试注入和路由组织都更清晰，后续可以在 lifespan 中初始化数据库、LLM client 和 Agent runtime。
+
+---
+
+## 第 3 章：设计配置系统
+
+### 本章目标
+
+使用 `pydantic-settings` 实现集中配置读取，支持 `.env`、环境变量、生产校验、CORS、API key、数据库地址、LLM provider 和 MCP server 配置。
+
+### 为什么要做这一步
+
+后端项目不能把 API key、数据库地址和运行模式写死在代码里。配置系统让本地、测试和生产可以使用同一套代码，只通过环境变量切换行为。
+
+### 本章要创建或修改哪些文件
+
+```text
+src/app_api/settings.py
+src/app_api/main.py
+.env.example
+tests/test_settings.py
+```
+
+### 推荐目录结构
+
+```text
+src/app_api/
+  settings.py
+  main.py
+tests/
+  test_settings.py
+.env.example
+```
+
+### 关键概念讲解
+
+`BaseSettings`：Pydantic 提供的配置基类，可以从环境变量和 `.env` 读取字段。
+
+`SecretStr`：用于保存 API key，打印时不会泄露真实值。
+
+生产校验：生产环境必须要求 `API_KEY`、明确 CORS、持久化 runtime store 和真实 LLM key。
+
+MCP 配置：用 JSON 对象配置外部工具 server。
+
+### 开发步骤
+
+1. 定义 `MCPServerConfig`。
+2. 定义 `AppSettings`。
+3. 实现 `is_test`、`is_production`、`parsed_cors_allowed_origins`。
+4. 加 `model_validator` 校验生产环境和 MCP server。
+5. 在 `main.py` 中接收 settings。
+6. 写测试覆盖默认值、生产校验和 MCP JSON。
+
+### 示例代码
+
+`src/app_api/settings.py`：
+
+```python
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class MCPServerConfig(BaseModel):
+    # extra="forbid" 可以防止配置写错字段却静默通过。
+    transport: Literal["http", "streamable_http", "stdio"]
+    url: str | None = None
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    headers: dict[str, str] = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class AppSettings(BaseSettings):
+    app_env: str = "dev"
+    cors_allowed_origins: str = ""
+    api_key: SecretStr | None = None
+
+    business_database_url: str = "sqlite+pysqlite:///./after_sales_mvp.db"
+    agent_runtime_database_url: str | None = None
+    auto_create_schema: bool = False
+
+    llm_provider: str = "deepseek"
+    llm_model: str = "deepseek-chat"
+    llm_timeout_seconds: float = Field(default=30.0, ge=0.1, le=300.0)
+    llm_max_retries: int = Field(default=2, ge=0, le=10)
+    deepseek_api_key: SecretStr | None = None
+    openai_api_key: SecretStr | None = None
+
+    max_steps: int = Field(default=4, ge=1, le=50)
+    approval_timeout_seconds: int = Field(default=900, ge=1)
+    mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+    @property
+    def is_test(self) -> bool:
+        # 测试环境允许缺少真实 LLM 和 runtime DB。
+        return self.app_env.lower() == "test"
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.lower() in {"prod", "production"}
+
+    @property
+    def parsed_cors_allowed_origins(self) -> list[str]:
+        origins = [item.strip() for item in self.cors_allowed_origins.split(",") if item.strip()]
+        return origins or (["*"] if not self.is_production else [])
+
+    @model_validator(mode="after")
+    def validate_runtime_requirements(self) -> "AppSettings":
+        # MCP http server 必须有 url，stdio server 必须有 command。
+        for name, config in self.mcp_servers.items():
+            if config.transport in {"http", "streamable_http"} and not config.url:
+                raise ValueError(f"MCP server `{name}` requires `url`")
+            if config.transport == "stdio" and not config.command:
+                raise ValueError(f"MCP server `{name}` requires `command`")
+
+        if not self.is_production:
+            return self
+
+        if self.api_key is None:
+            raise ValueError("API_KEY is required when APP_ENV=production")
+        if not self.parsed_cors_allowed_origins:
+            raise ValueError("CORS_ALLOWED_ORIGINS is required when APP_ENV=production")
+        if self.agent_runtime_database_url is None:
+            raise ValueError("AGENT_RUNTIME_DATABASE_URL is required when APP_ENV=production")
+        return self
+```
+
+`src/app_api/main.py`：
+
+```python
+from __future__ import annotations
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app_api.routers.health import router as health_router
+from app_api.settings import AppSettings
+
+
+def create_app(settings: AppSettings | None = None) -> FastAPI:
+    # 允许测试传入 AppSettings(app_env="test")。
+    resolved_settings = settings or AppSettings()
+    app = FastAPI(title="After-Sales Agent API", version="1.0.0")
+    app.state.settings = resolved_settings
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=resolved_settings.parsed_cors_allowed_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.include_router(health_router)
+    return app
+```
+
+### 如何运行或验证
+
+```bash
+cp .env.example .env
+uv run python -c "from app_api.settings import AppSettings; print(AppSettings().model_dump())"
+uv run pytest tests/test_settings.py -q
+```
+
+### 常见错误
+
+- `.env` 里写 `llm_provider=deepseek` 但配置字段是大写也没关系，Pydantic 会按字段名匹配环境变量。
+- `MCP_SERVERS` 不是合法 JSON，会导致启动时解析失败。
+- 生产环境缺少 `API_KEY` 应该主动报错，不要等线上出问题。
+
+### 面试时怎么讲
+
+可以这样说：
+
+> 我用 `pydantic-settings` 统一管理配置，并用 validator 做生产环境约束。API key 用 `SecretStr`，数据库和 LLM provider 通过环境变量注入，既方便本地开发，也能避免生产配置写死在代码里。
+
+---
+
+## 第 4 章：定义请求和响应模型
+
+### 本章目标
+
+定义 HTTP API 和 Agent runtime 会用到的 Pydantic schema，包括创建 run、run 响应、审批动作、Agent 摘要、工具摘要和业务实体。
+
+### 为什么要做这一步
+
+API 的输入输出不能靠字典随便传。Schema 是后端和调用方之间的契约，也是 FastAPI 自动生成 OpenAPI 文档和参数校验的基础。
+
+### 本章要创建或修改哪些文件
+
+```text
+src/app_api/schemas/runs.py
+src/app_api/schemas/actions.py
+src/app_api/schemas/agents.py
+src/agent_service/contracts/models.py
+src/business_service/after_sales/domain/entities.py
+```
+
+### 推荐目录结构
+
+```text
+src/app_api/schemas/
+  runs.py
+  actions.py
+  agents.py
+src/agent_service/contracts/
+  models.py
+src/business_service/after_sales/domain/
+  entities.py
+```
+
+### 关键概念讲解
+
+HTTP schema：只关心请求和响应长什么样。
+
+Domain schema：表达业务实体，例如 `OrderRead`、`TicketCreate`。
+
+Runtime schema：表达 Agent 运行状态，例如 `AgentRunResult`、`AgentPendingAction`。
+
+`Literal`：限制字符串只能取固定值，例如审批 decision 只能是 `approved` 或 `rejected`。
+
+### 开发步骤
+
+1. 先定义 Agent runtime 模型。
+2. 定义 run 请求和响应。
+3. 定义审批动作请求。
+4. 定义 Agent/tool catalog 响应。
+5. 定义售后业务实体。
+
+### 示例代码
+
+`src/agent_service/contracts/models.py`：
+
+```python
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+type RunStatus = Literal["completed", "awaiting_action", "failed"]
+type RiskLevel = Literal["low", "medium", "high"]
+
+
+class ActorContext(BaseModel):
+    # actor_id 表示当前操作人，可以是客服、主管或系统。
+    actor_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentPendingAction(BaseModel):
+    # pending action 是 Agent 暂停后等待人工处理的动作。
+    action_id: str
+    action_name: str
+    action_payload: dict[str, Any] = Field(default_factory=dict)
+    reason: str
+    risk_level: RiskLevel = "low"
+    display_payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentError(BaseModel):
+    code: str
+    message: str
+
+
+class AgentRunResult(BaseModel):
+    run_id: str
+    session_id: str
+    capability_id: str
+    status: RunStatus
+    output: str | None = None
+    pending_action: AgentPendingAction | None = None
+    error: AgentError | None = None
+```
+
+`src/app_api/schemas/runs.py`：
+
+```python
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from agent_service.contracts.models import AgentError, AgentPendingAction, RunStatus
+
+
+class CreateRunRequest(BaseModel):
+    # message 是用户对 Agent 说的话。
+    message: str = Field(min_length=1, max_length=4000)
+    session_id: str | None = None
+    actor_id: str | None = None
+    actor_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RunResponse(BaseModel):
+    run_id: str
+    session_id: str
+    status: RunStatus
+    output: str | None = None
+    pending_action: AgentPendingAction | None = None
+    error: AgentError | None = None
+```
+
+`src/app_api/schemas/actions.py`：
+
+```python
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+class ActionRequest(BaseModel):
+    # run_id 定位哪一次 Agent 执行，action_id 定位哪一个待审批动作。
+    run_id: str = Field(min_length=1)
+    action_id: str = Field(min_length=1)
+    decision: Literal["approved", "rejected"]
+    actor_id: str | None = None
+    actor_metadata: dict[str, Any] = Field(default_factory=dict)
+```
+
+### 如何运行或验证
+
+```bash
+uv run python - <<'PY'
+from app_api.schemas.runs import CreateRunRequest
+
+payload = CreateRunRequest(message="查一下订单 ORD123")
+print(payload.model_dump())
+PY
+```
+
+再写一个最小测试：
+
+```python
+from __future__ import annotations
+
+import pytest
+
+from app_api.schemas.runs import CreateRunRequest
+
+
+def test_create_run_request_rejects_empty_message() -> None:
+    # Pydantic 会根据 Field(min_length=1) 自动校验。
+    with pytest.raises(Exception):
+        CreateRunRequest(message="")
+```
+
+### 常见错误
+
+- 把 `dict` 到处传，导致字段名写错时不能及时发现。
+- `Decimal` 直接 JSON 序列化报错，Pydantic 的 `model_dump(mode="json")` 可以处理。
+- API schema 和 domain schema 混在一起，后期很难维护。
+
+### 面试时怎么讲
+
+可以这样说：
+
+> 我把 HTTP schema、业务 domain schema 和 Agent runtime schema 分开。这样接口契约清晰，业务实体不会被前端字段污染，Agent 运行状态也能独立演进。
+
+---
+
+## 第 5 章：售后业务领域建模
+
+### 本章目标
+
+用 Pydantic 定义售后业务实体，用 SQLAlchemy 定义数据库表结构，为订单、物流、工单、退款、审批和审计日志打基础。
+
+### 为什么要做这一步
+
+Agent 最终要调用真实业务能力。如果没有清晰的业务模型，Agent 只能聊天，不能完成查单、退款、审批这种实际动作。
+
+### 本章要创建或修改哪些文件
+
+```text
+src/business_service/after_sales/domain/entities.py
+src/business_service/after_sales/infrastructure/persistence/sqlalchemy/session.py
+src/business_service/after_sales/infrastructure/persistence/sqlalchemy/models.py
+```
+
+### 推荐目录结构
+
+```text
+src/business_service/after_sales/
+  domain/
+    __init__.py
+    entities.py
+  infrastructure/
+    persistence/
+      sqlalchemy/
+        __init__.py
+        session.py
+        models.py
+```
+
+### 关键概念讲解
+
+领域模型：业务层用来表达业务对象的数据结构。
+
+ORM model：数据库表对应的 Python 类。
+
+Pydantic `from_attributes=True`：允许从 SQLAlchemy 对象转换成 Pydantic read model。
+
+业务数据库：保存订单、物流、工单、退款、审批、审计日志。它和 LangGraph checkpoint 不是同一类状态。
+
+### 开发步骤
+
+1. 定义 `DomainModel` 基类。
+2. 定义 `OrderRead`、`ShipmentRead`、`TicketCreate`、`RefundRequestCreate`。
+3. 创建 SQLAlchemy `Base` 和 `BusinessDatabase`。
+4. 定义 `Customer`、`Order`、`Shipment`、`Ticket`、`RefundRequest`、`PolicyArticle`。
+5. 定义审批和审计相关表。
+
+### 示例代码
+
+`entities.py`：
+
+```python
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class DomainModel(BaseModel):
+    # from_attributes=True 允许从 ORM 对象直接 model_validate。
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class OrderRead(DomainModel):
+    order_id: str
+    customer_id: str
+    status: str
+    total_amount: Decimal
+    currency: str
+    item_summary: str
+    created_at: datetime
+
+
+class ShipmentRead(DomainModel):
+    shipment_id: str
+    order_id: str
+    carrier: str
+    tracking_no: str
+    status: str
+    latest_location: str | None = None
+    events_json: list[dict[str, Any]] = Field(default_factory=list)
+    updated_at: datetime
+
+
+class TicketCreate(BaseModel):
+    order_id: str
+    issue_type: Literal["damaged", "return", "exchange", "other"]
+    summary: str
+    priority: Literal["low", "normal", "high"] = "normal"
+
+
+class RefundRequestCreate(BaseModel):
+    order_id: str
+    amount: Decimal
+    reason: str
+    requires_approval: bool = False
+```
+
+`session.py`：
+
+```python
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
+from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
+
+
+class Base(DeclarativeBase):
+    # SQLAlchemy 2.0 的声明式模型基类。
+    pass
+
+
+def _async_database_url(database_url: str) -> str:
+    # 本地配置给 Alembic 用同步 sqlite，在线请求用 aiosqlite。
+    if database_url.startswith("sqlite+pysqlite://"):
+        return database_url.replace("sqlite+pysqlite://", "sqlite+aiosqlite://", 1)
+    return database_url
+
+
+class BusinessDatabase:
+    def __init__(self, database_url: str) -> None:
+        self.database_url = database_url
+        self.sync_engine = create_engine(database_url, future=True)
+        self.async_engine = create_async_engine(_async_database_url(database_url), future=True)
+        self._session_factory = async_sessionmaker(
+            bind=self.async_engine,
+            class_=AsyncSession,
+            autoflush=False,
+            expire_on_commit=False,
+        )
+
+    async def create_schema(self) -> None:
+        # 教学 MVP 可先用 create_all，后面再升级到 Alembic。
+        import business_service.after_sales.infrastructure.persistence.sqlalchemy.models  # noqa: F401
+
+        async with self.async_engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+
+    @asynccontextmanager
+    async def managed_session(self) -> AsyncGenerator[AsyncSession, None]:
+        async with self._session_factory() as session:
+            yield session
+
+    async def dispose(self) -> None:
+        await self.async_engine.dispose()
+        self.sync_engine.dispose()
+```
+
+### 如何运行或验证
+
+```bash
+uv add sqlalchemy aiosqlite
+uv run python - <<'PY'
+import asyncio
+from business_service.after_sales.infrastructure.persistence.sqlalchemy.session import BusinessDatabase
+
+async def main() -> None:
+    db = BusinessDatabase("sqlite+pysqlite:///./after_sales_mvp.db")
+    await db.create_schema()
+    await db.dispose()
+    print("schema created")
+
+asyncio.run(main())
+PY
+```
+
+### 常见错误
+
+- 用同步 SQLAlchemy session 放进 async route，会阻塞请求。
+- 忘记 import `models.py`，导致 `Base.metadata.create_all()` 没有表。
+- 金额用 `float` 存储，容易出现精度问题。业务金额推荐 `Decimal`。
+- 业务数据库和 Agent checkpoint 混在一起，后期审批恢复会变难。
+
+### 面试时怎么讲
+
+可以这样说：
+
+> 我把业务读写状态放在业务数据库，订单、物流、退款和审批记录都用 SQLAlchemy 建模。Pydantic read model 负责 API 输出，ORM model 负责持久化，两者通过 `model_validate` 转换。
+
+---
+
+## 第 6 章：Repository + Unit of Work
+
+### 本章目标
+
+实现 `AfterSalesRepository` 和 `AfterSalesUnitOfWork`，让业务服务不直接依赖 SQLAlchemy session，并把事务提交集中管理。
+
+### 为什么要做这一步
+
+业务服务应该表达“我要查订单、创建工单、提交退款”，而不是到处写 SQLAlchemy 查询和 `commit()`。Repository 负责数据访问，Unit of Work 负责事务边界。
+
+### 本章要创建或修改哪些文件
+
+```text
+src/business_service/after_sales/application/ports.py
+src/business_service/after_sales/application/services/after_sales_service.py
+src/business_service/after_sales/infrastructure/persistence/sqlalchemy/repositories.py
+src/business_service/after_sales/infrastructure/persistence/sqlalchemy/unit_of_work.py
+```
+
+### 推荐目录结构
+
+```text
+src/business_service/after_sales/
+  application/
+    ports.py
+    services/
+      after_sales_service.py
+  infrastructure/
+    persistence/
+      sqlalchemy/
+        repositories.py
+        unit_of_work.py
+```
+
+### 关键概念讲解
+
+Repository：封装数据库查询和写入。
+
+Protocol：用结构化类型定义接口，不强制继承。
+
+Unit of Work：一次业务用例中的事务边界，成功时 commit，异常或未提交时 rollback。
+
+依赖倒置：业务服务依赖接口，不依赖 SQLAlchemy 实现。
+
+### 开发步骤
+
+1. 在 `ports.py` 定义 repository 协议。
+2. 在 `ports.py` 定义 UoW 协议。
+3. 实现 `SqlAlchemyAfterSalesRepository`。
+4. 实现 `SqlAlchemyAfterSalesUnitOfWork`。
+5. 实现 `AfterSalesService`。
+6. 写 rollback 测试。
+
+### 示例代码
+
+`ports.py`：
+
+```python
+from __future__ import annotations
+
+from typing import Protocol
+
+from business_service.after_sales.domain.entities import OrderRead, TicketCreate, TicketRead
+
+
+class AfterSalesRepository(Protocol):
+    # Protocol 只描述能力，具体实现可以是 SQLAlchemy，也可以是测试 fake。
+    async def get_order(self, order_id: str) -> OrderRead | None: ...
+
+    async def create_ticket(self, payload: TicketCreate) -> TicketRead: ...
+
+
+class AfterSalesUnitOfWork(Protocol):
+    @property
+    def repository(self) -> AfterSalesRepository: ...
+
+    async def commit(self) -> None: ...
+
+    async def rollback(self) -> None: ...
+```
+
+`unit_of_work.py`：
+
+```python
+from __future__ import annotations
+
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
+from types import TracebackType
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from business_service.after_sales.application.ports import AfterSalesRepository, AfterSalesUnitOfWork
+from business_service.after_sales.infrastructure.persistence.sqlalchemy.repositories import SqlAlchemyAfterSalesRepository
+
+
+class SqlAlchemyAfterSalesUnitOfWork:
+    def __init__(
+        self,
+        session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
+    ) -> None:
+        self._session_factory = session_factory
+        self._session_context: AbstractAsyncContextManager[AsyncSession] | None = None
+        self._session: AsyncSession | None = None
+        self._repository: AfterSalesRepository | None = None
+        self._committed = False
+
+    @property
+    def repository(self) -> AfterSalesRepository:
+        if self._repository is None:
+            raise RuntimeError("unit of work is not active")
+        return self._repository
+
+    async def __aenter__(self) -> AfterSalesUnitOfWork:
+        # 进入上下文时创建 session 和 repository。
+        self._session_context = self._session_factory()
+        self._session = await self._session_context.__aenter__()
+        self._repository = SqlAlchemyAfterSalesRepository(self._session)
+        self._committed = False
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
+        # 未 commit 的写入默认 rollback，避免半成品落库。
+        if self._session is not None and not self._committed:
+            await self.rollback()
+        if self._session_context is not None:
+            return await self._session_context.__aexit__(exc_type, exc, traceback)
+        return None
+
+    async def commit(self) -> None:
+        if self._session is None:
+            raise RuntimeError("unit of work is not active")
+        await self._session.commit()
+        self._committed = True
+
+    async def rollback(self) -> None:
+        if self._session is None:
+            raise RuntimeError("unit of work is not active")
+        await self._session.rollback()
+```
+
+`after_sales_service.py`：
+
+```python
+from __future__ import annotations
+
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
+
+from business_service.after_sales.application.ports import AfterSalesUnitOfWork
+from business_service.after_sales.domain.entities import OrderRead, TicketCreate, TicketRead
+
+
+class AfterSalesService:
+    def __init__(
+        self,
+        *,
+        unit_of_work_factory: Callable[[], AbstractAsyncContextManager[AfterSalesUnitOfWork]],
+    ) -> None:
+        # service 只保存 UoW 工厂，不直接持有数据库 session。
+        self._unit_of_work_factory = unit_of_work_factory
+
+    async def get_order_detail(self, order_id: str) -> OrderRead:
+        async with self._unit_of_work_factory() as uow:
+            order = await uow.repository.get_order(order_id)
+        if order is None:
+            raise ValueError(f"order not found: {order_id}")
+        return order
+
+    async def create_ticket(self, payload: TicketCreate) -> TicketRead:
+        async with self._unit_of_work_factory() as uow:
+            ticket = await uow.repository.create_ticket(payload)
+            await uow.commit()
+            return ticket
+```
+
+### 如何运行或验证
+
+```bash
+uv run pytest tests/integration/test_app_api.py -q
+```
+
+重点验证：
+
+- 查询不存在订单返回 404。
+- 创建工单后能查到。
+- 抛异常且未 commit 时不会落库。
+
+### 常见错误
+
+- Repository 里直接 `commit()`：事务边界分散，多个写入难以保证一致性。
+- Service 里 import SQLAlchemy model：业务层和基础设施层耦合。
+- UoW 退出时不 rollback：异常路径可能留下脏状态。
+
+### 面试时怎么讲
+
+可以这样说：
+
+> 我用 Repository 隔离数据访问，用 Unit of Work 控制事务边界。Repository 不直接提交事务，业务 service 决定什么时候 commit，这样多个仓储操作可以组成一个原子业务用例。
+
+---
+
+## 第 7 章：实现普通业务 API
+
+### 本章目标
+
+先把售后能力作为普通 REST API 暴露出来，不依赖 Agent。包括订单、物流、客户、政策、工单、退款和审计日志。
+
+### 为什么要做这一步
+
+Agent 工具本质上还是业务 API 的另一种入口。先保证业务能力可以独立调用，后面 Agent 出问题时也能判断是业务层问题还是 Agent runtime 问题。
+
+### 本章要创建或修改哪些文件
+
+```text
+src/app_api/deps.py
+src/app_api/container.py
+src/app_api/bootstrap.py
+src/app_api/routers/after_sales_resources.py
+src/app_api/main.py
+```
+
+### 推荐目录结构
+
+```text
+src/app_api/
+  container.py
+  bootstrap.py
+  deps.py
+  routers/
+    after_sales_resources.py
+```
+
+### 关键概念讲解
+
+Dependency Injection：FastAPI 的 `Depends` 可以把 service 注入 route。
+
+Container：保存应用启动时创建好的共享对象，例如数据库、业务 service、Agent registry。
+
+Composition root：把所有依赖装配起来的地方。本项目是 `app_api/bootstrap.py`。
+
+API key：本地可选，生产推荐开启。
+
+### 开发步骤
+
+1. 创建 `AppContainer`。
+2. 在 `bootstrap.py` 初始化 `BusinessDatabase`、UoW factory、`AfterSalesService`。
+3. 在 lifespan 中把 container 放到 `app.state.container`。
+4. 写 `deps.py` 获取 container、校验 API key、获取 business service。
+5. 写业务 router。
+6. 在 `main.py` 注册 router。
+
+### 示例代码
+
+`deps.py`：
+
+```python
+from __future__ import annotations
+
+from typing import Annotated, cast
+
+from fastapi import Depends, Header, HTTPException, Request
+
+from app_api.container import AppContainer
+from business_service.after_sales.application.services.after_sales_service import AfterSalesService
+
+
+async def get_container(request: Request) -> AppContainer:
+    # app.state.container 在 lifespan 启动时写入。
+    return cast(AppContainer, request.app.state.container)
+
+
+async def require_api_key(
+    request: Request,
+    x_api_key: str | None = Header(default=None),
+) -> None:
+    expected = request.app.state.settings.api_key
+    if expected is None:
+        return
+    if x_api_key != expected.get_secret_value():
+        raise HTTPException(status_code=401, detail="invalid api key")
+
+
+async def get_after_sales_service(
+    container: Annotated[AppContainer, Depends(get_container)],
+) -> AfterSalesService:
+    return container.after_sales_service
+```
+
+`after_sales_resources.py`：
+
+```python
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException
+
+from app_api.deps import get_after_sales_service, require_api_key
+from business_service.after_sales.application.services.after_sales_service import AfterSalesService
+from business_service.after_sales.domain.entities import OrderRead
+
+router = APIRouter(prefix="/api/after-sales", tags=["after-sales-resources"])
+
+
+@router.get("/orders/{order_id}", response_model=OrderRead)
+async def get_order(
+    order_id: str,
+    service: AfterSalesService = Depends(get_after_sales_service),
+    _: None = Depends(require_api_key),
+) -> OrderRead:
+    try:
+        # route 层负责 HTTP 状态码，service 层负责业务语义。
+        return await service.get_order_detail(order_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+```
+
+### 如何运行或验证
+
+先写种子数据脚本，插入 `ORD123`，然后：
+
+```bash
+make seed
+make start
+curl http://127.0.0.1:8000/api/after-sales/orders/ORD123
+curl http://127.0.0.1:8000/api/after-sales/orders/ORD123/shipment
+curl -X POST http://127.0.0.1:8000/api/after-sales/tickets \
+  -H "Content-Type: application/json" \
+  -d '{"order_id":"ORD123","issue_type":"damaged","summary":"商品坏了","priority":"normal"}'
+```
+
+### 常见错误
+
+- route 里直接创建数据库连接：每个接口各管各的，生命周期混乱。
+- service 抛 `ValueError` 但 route 没转换成 `HTTPException`，客户端会得到 500。
+- `Depends(require_api_key)` 写漏，生产接口可能无保护。
+- 没 seed 数据就查 `ORD123`，返回 404 是正常的。
+
+### 面试时怎么讲
+
+可以这样说：
+
+> 我先把售后能力作为普通 REST API 暴露，并通过 FastAPI dependency 注入业务 service。这样业务能力不依赖 Agent，既能被传统系统调用，也能被 Agent 工具复用。
+
+---
+
+## 第 8 章：封装 LLM Client
+
+### 本章目标
+
+封装 chat model 创建逻辑，支持 DeepSeek 和 OpenAI，并让测试可以注入 fake chat model。
+
+### 为什么要做这一步
+
+Agent runtime 不应该关心具体 provider 怎么初始化，也不应该在测试里真的调用外部 LLM。封装 LLM factory 可以把 provider 差异和 API key 校验集中处理。
+
+### 本章要创建或修改哪些文件
+
+```text
+src/agent_service/llm/factory.py
+src/agent_service/llm/payloads.py
+src/agent_service/llm/tokens.py
+src/agent_service/llm/types.py
+tests/fake_chat_models.py
+tests/test_model_factory.py
+```
+
+### 推荐目录结构
+
+```text
+src/agent_service/llm/
+  __init__.py
+  factory.py
+  payloads.py
+  tokens.py
+  types.py
+tests/
+  fake_chat_models.py
+  test_model_factory.py
+```
+
+### 关键概念讲解
+
+Provider：LLM 服务商，例如 DeepSeek、OpenAI。
+
+Chat model：LangChain 中统一的聊天模型接口。
+
+Streaming：模型一边生成一边返回 token 或 message chunk。
+
+Fake model：测试用模型，不请求网络，按规则返回结果。
+
+Token usage：记录或估算输入输出 token 数，方便调试和成本分析。
+
+### 开发步骤
+
+1. 创建 `build_chat_model()`。
+2. 根据 `llm_provider` 分支创建 DeepSeek 或 OpenAI model。
+3. API key 缺失时抛出明确错误。
+4. 设置 `temperature=0`，提高教学和测试稳定性。
+5. 创建 `DeterministicToolCallingChatModel` 作为测试模型。
+6. 在 `create_app()` 中支持 `chat_model_override`。
+
+### 示例代码
+
+`factory.py`：
+
+```python
+from __future__ import annotations
+
+from langchain_core.language_models.chat_models import BaseChatModel
+from pydantic import SecretStr
+
+
+def build_chat_model(
+    *,
+    llm_provider: str,
+    llm_model: str,
+    llm_timeout_seconds: float,
+    llm_max_retries: int,
+    deepseek_api_key: str | None,
+    openai_api_key: str | None,
+) -> BaseChatModel:
+    # factory 集中处理 provider 分支和 API key 校验。
+    if llm_provider == "deepseek":
+        if deepseek_api_key is None:
+            raise ValueError("DEEPSEEK_API_KEY is required when llm_provider=deepseek")
+        from langchain_deepseek import ChatDeepSeek
+
+        return ChatDeepSeek(
+            api_key=SecretStr(deepseek_api_key),
+            model=llm_model,
+            temperature=0,
+            streaming=True,
+            timeout=llm_timeout_seconds,
+            max_retries=llm_max_retries,
+        )
+
+    if llm_provider == "openai":
+        if openai_api_key is None:
+            raise ValueError("OPENAI_API_KEY is required when llm_provider=openai")
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            api_key=SecretStr(openai_api_key),
+            model=llm_model,
+            temperature=0,
+            streaming=True,
+            timeout=llm_timeout_seconds,
+            max_retries=llm_max_retries,
+        )
+
+    raise ValueError(f"unsupported llm provider: {llm_provider}")
+```
+
+测试模型思路：
+
+```python
+from __future__ import annotations
+
+from typing import Any
+
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.tools import BaseTool
+from pydantic import PrivateAttr
+
+
+class DeterministicToolCallingChatModel(BaseChatModel):
+    _bound_tools: list[BaseTool] = PrivateAttr(default_factory=list)
+
+    @property
+    def _llm_type(self) -> str:
+        # LangChain 要求模型声明自己的类型名称。
+        return "deterministic-test-model"
+
+    def bind_tools(
+        self,
+        tools: list[BaseTool] | tuple[BaseTool, ...],
+        **kwargs: Any,
+    ) -> "DeterministicToolCallingChatModel":
+        # Agent runtime 会调用 bind_tools，把工具绑定到模型上。
+        del kwargs
+        clone = self.model_copy(deep=True)
+        clone._bound_tools = list(tools)
+        return clone
+
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        **kwargs: Any,
+    ) -> ChatResult:
+        # 测试模型可以根据最后一条消息决定直接回复还是发起工具调用。
+        del kwargs
+        message = AIMessage(content="测试模型回复")
+        if messages and isinstance(messages[-1], ToolMessage):
+            message = AIMessage(content=f"工具结果：{messages[-1].content}")
+        return ChatResult(generations=[ChatGeneration(message=message)])
+
+    def _generate(self, messages: list[BaseMessage], **kwargs: Any) -> ChatResult:
+        # 项目测试只走 async 路径，同步路径显式不实现。
+        del messages, kwargs
+        raise NotImplementedError("tests use async execution only")
+```
+
+### 如何运行或验证
+
+```bash
+uv run pytest tests/test_model_factory.py -q
+```
+
+本地真实模型验证：
+
+```bash
+LLM_PROVIDER=deepseek DEEPSEEK_API_KEY=replace-me uv run python - <<'PY'
+from app_api.settings import AppSettings
+from agent_service.llm.factory import build_chat_model
+
+settings = AppSettings()
+model = build_chat_model(
+    llm_provider=settings.llm_provider,
+    llm_model=settings.llm_model,
+    llm_timeout_seconds=settings.llm_timeout_seconds,
+    llm_max_retries=settings.llm_max_retries,
+    deepseek_api_key=settings.deepseek_api_key.get_secret_value() if settings.deepseek_api_key else None,
+    openai_api_key=None,
+)
+print(model.__class__.__name__)
+PY
+```
+
+### 常见错误
+
+- 测试直接调用真实 LLM，导致慢、不稳定、依赖网络和费用。
+- provider 缺 key 时错误信息不明确。
+- `temperature` 太高，测试结果不可预测。
+- 忘记 `streaming=True`，后续 SSE 体验变差。
+
+### 面试时怎么讲
+
+可以这样说：
+
+> 我把 LLM provider 初始化封装成 factory，业务和 runtime 不直接依赖具体模型类。测试通过 fake chat model 注入，避免外部网络和费用，也让 tool calling 流程可重复验证。
+
+---
+
+## 第 9 章：Agent Contract 和 ToolSpec
+
+### 本章目标
+
+定义 Agent runtime 和业务工具之间的窄接口，包括 `ToolSpec`、`ApprovalPolicy`、`AgentDefinition`、`RunEvent` 和 `AgentRegistry`。
+
+### 为什么要做这一步
+
+如果直接把业务服务绑到 LangChain tool，业务层会被框架污染。先定义项目自己的窄 contract，可以让业务工具、MCP 工具和 runtime 通过统一接口连接。
+
+### 本章要创建或修改哪些文件
+
+```text
+src/agent_service/contracts/actions.py
+src/agent_service/contracts/capability.py
+src/agent_service/contracts/events.py
+src/agent_service/contracts/registry.py
+src/agent_service/contracts/models.py
+```
+
+### 推荐目录结构
+
+```text
+src/agent_service/contracts/
+  __init__.py
+  actions.py
+  capability.py
+  events.py
+  models.py
+  registry.py
+```
+
+### 关键概念讲解
+
+`ToolSpec`：项目内部的工具描述，包含名字、描述、参数 schema、handler 和审批策略。
+
+`ApprovalPolicy`：判断一次工具调用是否需要人工审批。
+
+`AgentDefinition`：一个 agent 的能力定义，包含 capability id、prompt 和 tools。
+
+`RunEvent`：Agent 执行过程中的事件，例如 run started、tool started、approval required、run completed。
+
+`AgentRegistry`：代码型 agent catalog，用于 `/api/agents` 和工具列表接口。
+
+### 开发步骤
+
+1. 定义 `ApprovalRequirement`。
+2. 定义 `ToolContext` 和 `ToolHandler`。
+3. 定义 `ToolSpec`。
+4. 定义 `AgentDefinition`。
+5. 定义运行事件。
+6. 实现 `AgentRegistry`。
+
+### 示例代码
+
+`actions.py`：
+
+```python
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol
+
+from pydantic import BaseModel
+
+from agent_service.contracts.models import ActorContext, RiskLevel
+
+
+@dataclass(slots=True, frozen=True)
+class ApprovalRequirement:
+    # 这个对象描述为什么要暂停，以及给人工看的展示信息。
+    reason: str
+    risk_level: RiskLevel = "low"
+    display_payload: dict[str, object] | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class ToolContext:
+    capability_id: str
+    actor: ActorContext = field(default_factory=ActorContext)
+    dependencies: object | None = None
+
+
+class ToolHandler(Protocol):
+    def __call__(self, payload: dict[str, Any], context: ToolContext) -> Any: ...
+
+
+class ApprovalPolicy(Protocol):
+    def evaluate(self, payload: dict[str, Any]) -> ApprovalRequirement | None: ...
+
+
+@dataclass(slots=True, frozen=True)
+class CallableApprovalPolicy:
+    evaluator: Callable[[dict[str, Any]], ApprovalRequirement | None]
+
+    def evaluate(self, payload: dict[str, Any]) -> ApprovalRequirement | None:
+        return self.evaluator(payload)
+
+
+@dataclass(slots=True, frozen=True)
+class ToolSpec:
+    name: str
+    description: str
+    args_schema: type[BaseModel]
+    handler: ToolHandler
+    approval_policy: ApprovalPolicy | None = None
+    source: Literal["local", "mcp"] = "local"
+    source_id: str | None = None
+```
+
+`capability.py`：
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from agent_service.contracts.actions import ToolSpec
+
+
+@dataclass(slots=True, frozen=True)
+class AgentDefinition:
+    # capability_id 是这个 agent 在 API 和 registry 中的稳定 id。
+    capability_id: str
+    system_prompt: str
+    tools: tuple[ToolSpec, ...]
+    name: str | None = None
+    description: str | None = None
+```
+
+`registry.py`：
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from agent_service.contracts.capability import AgentDefinition
+
+
+@dataclass(slots=True)
+class AgentRegistry:
+    _definitions: dict[str, AgentDefinition] = field(default_factory=dict)
+
+    def register(self, definition: AgentDefinition) -> None:
+        # 后注册的同 id definition 会覆盖旧值，便于测试替换。
+        self._definitions[definition.capability_id] = definition
+
+    def get(self, capability_id: str) -> AgentDefinition | None:
+        return self._definitions.get(capability_id)
+
+    def list_definitions(self) -> list[AgentDefinition]:
+        return [self._definitions[key] for key in sorted(self._definitions)]
+```
+
+### 如何运行或验证
+
+```bash
+uv run python - <<'PY'
+from pydantic import BaseModel
+from agent_service.contracts.actions import ToolSpec, ToolContext
+
+class Args(BaseModel):
+    order_id: str
+
+def handler(payload: dict, context: ToolContext) -> dict:
+    return {"ok": True, "order_id": payload["order_id"]}
+
+tool = ToolSpec(name="get_order_detail", description="查订单", args_schema=Args, handler=handler)
+print(tool.name, tool.args_schema.model_json_schema()["title"])
+PY
+```
+
+### 常见错误
+
+- 把 `ToolSpec` 设计得太像某个厂商的 tool schema，导致后续难以替换 runtime。
+- 让 `agent_service` import 售后业务模块，破坏层间边界。
+- 工具 handler 不做参数 schema 校验，LLM 生成错误参数时难以定位。
+
+### 面试时怎么讲
+
+可以这样说：
+
+> 我没有让业务层直接依赖 LangChain，而是定义了项目内部的 `ToolSpec` 和 `AgentDefinition`。业务能力先包装成稳定的内部 contract，再由 runtime 适配成 LangChain tool。
+
+---
+
+## 第 10 章：售后 Agent Definition
+
+### 本章目标
+
+把 `AfterSalesService` 包装成 Agent 可调用的工具目录，定义售后 Agent 的系统提示词和审批策略。
+
+### 为什么要做这一步
+
+业务服务只会处理结构化参数，用户输入是自然语言。Agent Definition 负责告诉模型有哪些工具、什么时候用工具、每个工具需要什么参数，以及哪些工具需要审批。
+
+### 本章要创建或修改哪些文件
+
+```text
+src/app_api/services/after_sales_agent_definition.py
+src/app_api/routers/agents.py
+src/app_api/schemas/agents.py
+```
+
+### 推荐目录结构
+
+```text
+src/app_api/
+  services/
+    after_sales_agent_definition.py
+  routers/
+    agents.py
+  schemas/
+    agents.py
+```
+
+### 关键概念讲解
+
+Adapter：把业务服务方法转换成 Agent 工具 handler。
+
+System prompt：告诉模型角色、边界、工具选择规则和输出风格。
+
+Approval policy：在真正执行高风险工具前判断是否暂停。
+
+Tool catalog API：让前端或调用方知道当前 agent 有哪些工具。
+
+### 开发步骤
+
+1. 定义 `build_after_sales_agent_definition()`。
+2. 为每个业务 service 方法写 tool handler。
+3. handler 内用 Pydantic schema 校验 payload。
+4. 将返回值 `model_dump(mode="json")`。
+5. 为退款工具加审批策略。
+6. 写 `/api/agents` 和 `/api/agents/{capability_id}/tools`。
+
+### 示例代码
+
+`after_sales_agent_definition.py`：
+
+```python
+from __future__ import annotations
+
+from typing import Any
+
+from agent_service.contracts.actions import ApprovalRequirement, CallableApprovalPolicy, ToolContext, ToolSpec
+from agent_service.contracts.capability import AgentDefinition
+from business_service.after_sales.application.services.after_sales_service import AfterSalesService
+from business_service.after_sales.domain.entities import OrderLookupInput, RefundRequestCreate
+
+
+def build_after_sales_agent_definition(
+    *,
+    after_sales_service: AfterSalesService,
+) -> AgentDefinition:
+    async def get_order_detail(
+        payload: dict[str, Any],
+        context: ToolContext,
+    ) -> dict[str, Any]:
+        # context 里有 actor 信息，本工具暂时不需要。
+        del context
+        order = await after_sales_service.get_order_detail(
+            OrderLookupInput.model_validate(payload)
+        )
+        return order.model_dump(mode="json")
+
+    async def submit_refund_request(
+        payload: dict[str, Any],
+        context: ToolContext,
+    ) -> dict[str, Any]:
+        del context
+        refund = await after_sales_service.submit_refund_request(
+            RefundRequestCreate.model_validate(payload)
+        )
+        return refund.model_dump(mode="json")
+
+    def evaluate_refund_approval(payload: dict[str, Any]) -> ApprovalRequirement | None:
+        # 把业务层审批规则转换成 Agent runtime 能识别的 ApprovalRequirement。
+        requirement = after_sales_service.evaluate_refund_approval(
+            RefundRequestCreate.model_validate(payload)
+        )
+        if requirement is None:
+            return None
+        return ApprovalRequirement(
+            reason=requirement.reason,
+            risk_level=requirement.risk_level,
+            display_payload=requirement.display_payload,
+        )
+
+    system_prompt = "".join(
+        (
+            "你是售后客服专家。",
+            "你的目标是帮助用户完成查单、查物流、建工单、退款申请和售后政策解释。",
+            "当用户查询订单状态时，优先调用 get_order_detail。",
+            "当用户明确要求退款并提供订单号、金额和原因时，调用 submit_refund_request。",
+            "回复必须简洁、专业、中文输出。",
+            "如果动作已经返回结果，优先基于结果作答，不要编造业务数据。",
+            "每轮最多调用一个工具。",
+        )
+    )
+
+    return AgentDefinition(
+        capability_id="after_sales_assistant",
+        name="After-Sales Assistant",
+        description="售后客服 agent，支持查单、物流、工单、退款审批和政策查询。",
+        system_prompt=system_prompt,
+        tools=(
+            ToolSpec(
+                name="get_order_detail",
+                description="获取订单详情，适用于查询订单状态、商品概要和下单信息。",
+                args_schema=OrderLookupInput,
+                handler=get_order_detail,
+            ),
+            ToolSpec(
+                name="submit_refund_request",
+                description="提交退款申请。命中审批策略时会先等待人工动作。",
+                args_schema=RefundRequestCreate,
+                handler=submit_refund_request,
+                approval_policy=CallableApprovalPolicy(evaluate_refund_approval),
+            ),
+        ),
+    )
+```
+
+### 如何运行或验证
+
+启动后调用：
+
+```bash
+curl http://127.0.0.1:8000/api/agents
+curl http://127.0.0.1:8000/api/agents/after_sales_assistant/tools
+```
+
+预期工具列表中包含：
+
+```text
+get_order_detail
+submit_refund_request
+```
+
+`submit_refund_request` 的 `requires_approval` 应为 `true`。
+
+### 常见错误
+
+- prompt 写得太泛，模型不知道什么时候调用哪个工具。
+- 工具描述不清楚，模型选择工具不稳定。
+- handler 里不做 `model_validate`，LLM 参数错误时会在更深层才爆。
+- 审批规则写在 runtime 里，导致业务规则和 Agent 执行逻辑耦合。
+
+### 面试时怎么讲
+
+可以这样说：
+
+> 我把售后业务服务包装成 Agent Definition。工具 handler 是 adapter，负责参数校验和结果序列化；审批规则仍来自业务服务，Agent 层只负责根据审批结果暂停或继续执行。
+
+---
+
+## 第 11 章：LangChain/LangGraph Runtime
+
+### 本章目标
+
+使用 LangChain `create_agent` 和 LangGraph checkpoint 实现 Agent 执行、工具调用事件、审批中断、恢复执行、session transcript 和运行状态查询。
+
+### 为什么要做这一步
+
+前面已经有业务工具和 Agent Definition，但还缺少真正执行 Agent 的 runtime。Runtime 的职责是把内部 `ToolSpec` 转成 LangChain tool，把运行过程转成项目自己的 `RunEvent`，并在需要审批时暂停。
+
+### 本章要创建或修改哪些文件
+
+```text
+src/agent_service/infrastructure/runtime/langchain_runtime.py
+src/agent_service/infrastructure/state_store/in_memory_store.py
+src/agent_service/infrastructure/state_store/langgraph_postgres_store.py
+src/agent_service/infrastructure/state_store/session_transcript_store.py
+src/app_api/services/after_sales_assistant.py
+src/app_api/services/after_sales_run_projector.py
+```
+
+### 推荐目录结构
+
+```text
+src/agent_service/infrastructure/
+  runtime/
+    langchain_runtime.py
+  state_store/
+    in_memory_store.py
+    langgraph_postgres_store.py
+    session_transcript_store.py
+src/app_api/services/
+  after_sales_assistant.py
+  after_sales_run_projector.py
+```
+
+### 关键概念讲解
+
+LangChain `create_agent`：根据模型、工具、prompt 创建可执行 agent。
+
+LangGraph checkpointer：保存 thread/run 状态，支持中断和恢复。
+
+`interrupt`：LangGraph 中让执行暂停并等待外部 resume 的机制。
+
+`RunEvent`：项目自己的事件模型，避免 API 层直接暴露 LangChain 内部事件。
+
+`session_id` 和 `run_id`：`session_id` 是对话上下文，`run_id` 是一次执行线程。一个 session 下可以有多个 run，其中某个 run 可以等待审批，另一个 run 仍可执行。
+
+### 开发步骤
+
+1. 实现 `InMemoryStateStore`，用于本地和测试。
+2. 实现 `SessionTranscriptStore`，保存 session 级对话历史。
+3. 实现 `LangChainAgentRuntime.stream_run()`。
+4. 将 `ToolSpec` 转成 `StructuredTool`。
+5. 用 middleware 在模型准备调用高风险工具后触发 `interrupt`。
+6. 实现 `stream_action()`，通过 `Command(resume=...)` 恢复执行。
+7. 将 LangChain stream part 映射成 `OutputDeltaEvent`、`ActionStartedEvent`、`ActionCompletedEvent`。
+8. 实现 `get_state()` 查询 run 状态。
+9. 用 `AfterSalesRunProjector` 把事件投影到 tool log、approval record 和 audit log。
+
+### 示例代码
+
+简化版 `_to_langchain_tool()`：
+
+```python
+from __future__ import annotations
+
+from typing import Any
+
+from langchain_core.tools import StructuredTool
+from langchain_core.tools.base import BaseTool
+
+from agent_service.contracts.actions import ToolContext, ToolSpec
+
+
+def to_langchain_tool(tool_spec: ToolSpec) -> BaseTool:
+    async def runner(**kwargs: Any) -> tuple[str, dict[str, Any]]:
+        # LangChain tool 的 kwargs 来自模型生成的工具参数。
+        result = await tool_spec.handler(
+            kwargs,
+            ToolContext(capability_id="after_sales_assistant"),
+        )
+        envelope = {"success": True, "action": tool_spec.name, "result": result}
+        return str(envelope), envelope
+
+    return StructuredTool.from_function(
+        coroutine=runner,
+        name=tool_spec.name,
+        description=tool_spec.description,
+        args_schema=tool_spec.args_schema,
+        response_format="content_and_artifact",
+    )
+```
+
+简化版审批中断逻辑：
+
+```python
+from __future__ import annotations
+
+from langgraph.types import interrupt
+
+from agent_service.contracts.models import AgentPendingAction
+
+
+def maybe_interrupt_for_approval(
+    *,
+    tool_name: str,
+    tool_arguments: dict,
+    action_id: str,
+    requirement,
+) -> object | None:
+    # requirement 来自 ToolSpec.approval_policy.evaluate。
+    if requirement is None:
+        return None
+
+    pending_action = AgentPendingAction(
+        action_id=action_id,
+        action_name=tool_name,
+        action_payload=tool_arguments,
+        reason=requirement.reason,
+        risk_level=requirement.risk_level,
+        display_payload=requirement.display_payload or {},
+    )
+
+    # interrupt 会把当前 run 暂停，后续通过 Command(resume=...) 恢复。
+    return interrupt({"pending_action": pending_action.model_dump(mode="json")})
+```
+
+`AfterSalesAssistantService` 的作用：
+
+```python
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+
+from agent_service.contracts.events import RunCompletedEvent, RunEvent
+from agent_service.contracts.models import ActorContext, AgentRunResult
+
+
+class AfterSalesAssistantService:
+    def __init__(self, *, runtime, definition, projector) -> None:
+        self._runtime = runtime
+        self._definition = definition
+        self._projector = projector
+
+    async def run(
+        self,
+        *,
+        message: str,
+        session_id: str | None,
+        actor: ActorContext,
+    ) -> AgentRunResult:
+        # 同步接口本质上也是消费 stream，直到 RunCompletedEvent。
+        async for event in self.stream(message=message, session_id=session_id, actor=actor):
+            if isinstance(event, RunCompletedEvent):
+                return event.result
+        raise RuntimeError("run finished without RunCompletedEvent")
+
+    async def stream(
+        self,
+        *,
+        message: str,
+        session_id: str | None,
+        actor: ActorContext,
+    ) -> AsyncIterator[RunEvent]:
+        async for event in self._runtime.stream_run(
+            definition=self._definition,
+            message=message,
+            session_id=session_id,
+            actor=actor,
+        ):
+            await self._projector.record_event(event)
+            yield event
+```
+
+### 如何运行或验证
+
+单元测试优先：
+
+```bash
+uv run pytest tests/test_langchain_runtime.py -q
+```
+
+重点验证事件顺序：
+
+```text
+RunStartedEvent
+ActionStartedEvent
+ActionCompletedEvent
+OutputDeltaEvent
+RunCompletedEvent
+```
+
+审批流验证：
+
+```text
+RunStartedEvent
+ActionRequiredEvent
+RunCompletedEvent(status=awaiting_action)
+```
+
+然后调用恢复动作，预期完成：
+
+```text
+RunStartedEvent
+ActionStartedEvent
+ActionCompletedEvent
+OutputDeltaEvent
+RunCompletedEvent(status=completed)
+```
+
+### 常见错误
+
+- 把 `session_id` 当成 LangGraph `thread_id`，导致一个 session 里多个待审批 run 相互阻塞。当前项目用 `run_id` 做 thread id。
+- 直接把 LangChain stream 原始事件返回给前端，API 契约会跟第三方库强绑定。
+- 审批拒绝后没有写 ToolMessage，模型不知道为什么工具没执行。
+- 忘记持久化 session transcript，下一轮对话没有上下文。
+
+### 面试时怎么讲
+
+可以这样说：
+
+> Runtime 用 LangChain `create_agent` 执行工具调用，用 LangGraph checkpoint 保存 run 级状态。高风险工具通过 middleware 在执行前触发 interrupt，人工审批后用 resume 恢复。API 层只暴露项目自己的 RunEvent，不暴露 LangChain 内部结构。
+
+---
+
+## 第 12 章：API 集成、测试、部署与复盘
+
+### 本章目标
+
+把 Agent runtime 接入 HTTP API，补齐同步运行、SSE 流、审批动作、状态查询、Agent catalog、测试、迁移、seed、compose 和面试复盘。
+
+### 为什么要做这一步
+
+前面的模块只有组合起来才是一个完整产品。最后一章要把业务数据库、LLM、runtime、Agent definition、projection 和 HTTP router 装配成一个可运行、可测试、可部署的后端。
+
+### 本章要创建或修改哪些文件
+
+```text
+src/app_api/bootstrap.py
+src/app_api/container.py
+src/app_api/deps.py
+src/app_api/routers/after_sales_runs.py
+src/app_api/routers/after_sales_approvals.py
+src/app_api/routers/agents.py
+src/app_api/routers/health.py
+src/app_api/migrations.py
+src/app_api/cli/doctor.py
+src/app_api/cli/migrate.py
+scripts/seed.py
+migrations/
+compose.yaml
+Makefile
+tests/
+```
+
+### 推荐目录结构
+
+```text
+src/app_api/
+  bootstrap.py
+  container.py
+  deps.py
+  migrations.py
+  cli/
+    doctor.py
+    migrate.py
+  routers/
+    health.py
+    agents.py
+    after_sales_resources.py
+    after_sales_runs.py
+    after_sales_approvals.py
+scripts/
+  seed.py
+migrations/
+  env.py
+  versions/
+compose.yaml
+Makefile
+tests/
+```
+
+### 关键概念讲解
+
+同步 run API：后端消费完整 Agent stream，只把最终 `RunResponse` 返回给调用方。
+
+SSE stream API：把每个 `RunEvent` 转成 `event:` 和 `data:` 返回给前端。
+
+Approval action API：提交 `approved` 或 `rejected`，恢复某个 paused run。
+
+Projection：把运行事件投影成业务数据库里的 tool log、approval record 和 audit log。
+
+Alembic：版本化管理数据库 schema。
+
+Compose：本项目现有 `compose.yaml` 提供 PostgreSQL 和 Redis；教学版后端 Dockerfile 可作为扩展新增。
+
+### 开发步骤
+
+1. 在 `bootstrap.py` 创建数据库、UoW、业务 service。
+2. 加载 MCP tools，失败时不阻止应用启动，只让 health degraded。
+3. 注册售后 Agent Definition 到 `AgentRegistry`。
+4. 创建 LLM dependency，失败时让 assistant service unavailable。
+5. 创建 `LangChainAgentRuntime` 和 `AfterSalesAssistantService`。
+6. 实现 `/api/after-sales/runs`。
+7. 实现 `/api/after-sales/runs/stream`。
+8. 实现 `/api/after-sales/actions`。
+9. 实现 `/api/after-sales/runs/{run_id}`。
+10. 实现 `/health` 返回 runtime、business DB、LLM、MCP 状态。
+11. 增加 Alembic migration 和 seed 数据。
+12. 写 pytest、ruff、mypy 质量门槛。
+
+### 示例代码
+
+`after_sales_runs.py` 核心接口：
+
+```python
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterator
+from typing import Annotated
+
+from fastapi import APIRouter, Depends
+from sse_starlette.sse import EventSourceResponse
+
+from agent_service.contracts.events import OutputDeltaEvent, RunCompletedEvent, RunStartedEvent
+from agent_service.contracts.models import ActorContext
+from app_api.deps import get_after_sales_assistant_service, require_api_key
+from app_api.schemas.runs import CreateRunRequest, RunResponse
+
+router = APIRouter(prefix="/api/after-sales", tags=["after-sales-runs"])
+
+
+def encode_sse(event: str, payload: dict[str, object]) -> dict[str, str]:
+    # SSE 响应必须把 data 编码成字符串。
+    return {"event": event, "data": json.dumps(payload, ensure_ascii=False)}
+
+
+async def sse_stream(stream: AsyncIterator[object]) -> AsyncIterator[dict[str, str]]:
+    async for event in stream:
+        if isinstance(event, RunStartedEvent):
+            yield encode_sse("run.started", {"run_id": event.run_id, "session_id": event.session_id})
+        elif isinstance(event, OutputDeltaEvent):
+            yield encode_sse("output.delta", {"run_id": event.run_id, "delta": event.delta})
+        elif isinstance(event, RunCompletedEvent):
+            yield encode_sse("run.completed", event.result.model_dump(mode="json"))
+
+
+@router.post("/runs", response_model=RunResponse)
+async def create_run(
+    payload: CreateRunRequest,
+    assistant_service: Annotated[object, Depends(get_after_sales_assistant_service)],
+    _: None = Depends(require_api_key),
+) -> RunResponse:
+    result = await assistant_service.run(
+        message=payload.message,
+        session_id=payload.session_id,
+        actor=ActorContext(actor_id=payload.actor_id, metadata=payload.actor_metadata),
+    )
+    return RunResponse.model_validate(result.model_dump(mode="json"))
+
+
+@router.post("/runs/stream")
+async def stream_run(
+    payload: CreateRunRequest,
+    assistant_service: Annotated[object, Depends(get_after_sales_assistant_service)],
+    _: None = Depends(require_api_key),
+) -> EventSourceResponse:
+    stream = assistant_service.stream(
+        message=payload.message,
+        session_id=payload.session_id,
+        actor=ActorContext(actor_id=payload.actor_id, metadata=payload.actor_metadata),
+    )
+    return EventSourceResponse(sse_stream(stream), media_type="text/event-stream")
+```
+
+`compose.yaml`：
+
+```yaml
+services:
+  postgres:
+    image: postgres:16
+    container_name: agent-postgres
+    environment:
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: agent
+      POSTGRES_DB: agent_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: agent-redis
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
+```
+
+教学版可选新增 `Dockerfile`：
+
+```dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+RUN pip install uv && uv sync --frozen --no-dev
+
+COPY src ./src
+COPY migrations ./migrations
+COPY alembic.ini ./alembic.ini
+
+CMD [".venv/bin/python", "-m", "uvicorn", "app_api.main:create_app", "--factory", "--app-dir", "src", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+### 如何运行或验证
+
+本地 SQLite 快速验证：
+
+```bash
+uv sync --extra dev
+make seed
+make start
+curl http://127.0.0.1:8000/health
+```
+
+业务 API：
 
 ```bash
 curl http://127.0.0.1:8000/api/after-sales/orders/ORD123
 ```
 
-你应该能看到订单状态、金额、商品摘要等字段。
-
-这条请求的上层到下层路径是：
-
-```text
-浏览器 / curl
-  -> src/app_api/routers/after_sales_resources.py
-  -> repository.get_order()
-  -> business DB: orders 表
-  -> JSON 响应
-```
-
-对应文件：
-
-```text
-src/app_api/routers/after_sales_resources.py
-src/business_service/after_sales/infrastructure/persistence/sqlalchemy/repositories.py
-src/business_service/after_sales/infrastructure/persistence/sqlalchemy/models.py
-```
-
-注意这个阶段的重点：
-
-> 普通查单不需要 Agent。因为你已经明确知道要查 `ORD123`。
-
-### 3.2 查询物流
-
-```bash
-curl http://127.0.0.1:8000/api/after-sales/orders/ORD123/shipment
-```
-
-这会查 `shipments` 表对应的物流信息。
-
-### 3.3 查询客户
-
-```bash
-curl http://127.0.0.1:8000/api/after-sales/customers/CUS001
-```
-
-### 3.4 搜索售后规则
-
-```bash
-curl "http://127.0.0.1:8000/api/after-sales/policies/search?q=退款"
-```
-
-### 3.5 创建工单
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/after-sales/tickets \
-  -H "Content-Type: application/json" \
-  -d '{
-    "order_id": "ORD123",
-    "issue_type": "damaged",
-    "summary": "耳机收到后破损，需要售后处理",
-    "priority": "normal"
-  }'
-```
-
-### 3.6 直接创建退款申请
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/after-sales/refund-requests \
-  -H "Content-Type: application/json" \
-  -d '{
-    "order_id": "ORD123",
-    "amount": "50",
-    "reason": "普通退款申请",
-    "requires_approval": false
-  }'
-```
-
-这也是普通资源接口，不经过 Agent 的自然语言判断。
-
-### 3.7 这一阶段的验收问题
-
-你应该能回答：
-
-1. 为什么 `GET /orders/ORD123` 不需要 LLM？
-2. `after_sales_resources.py` 做了什么？
-3. repository 做了什么？
-4. 如果订单不存在，404 是在哪一层返回的？
-5. 普通资源接口和 Agent 接口有什么区别？
-
-如果这些问题还答不上来，先不要进入 LangGraph。
-
----
-
-## 4. 第三步：第一次调用 Agent
-
-现在再看 Agent 接口。
-
-让 Agent 查订单：
+同步 Agent run：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/after-sales/runs \
   -H "Content-Type: application/json" \
-  -d '{
-    "message": "查一下订单 ORD123",
-    "session_id": "guide-session-1",
-    "actor_id": "learner-1"
-  }'
+  -d '{"message":"查一下订单 ORD123","session_id":"demo-1"}'
 ```
 
-你会得到类似结构：
-
-```json
-{
-  "run_id": "run-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "session_id": "guide-session-1",
-  "status": "completed",
-  "output": "订单 ORD123 当前状态是 shipped，商品为 蓝牙耳机 x1。",
-  "pending_action": null,
-  "error": null
-}
-```
-
-注意：
-
-- `message` 是用户自然语言。
-- `session_id` 是一段聊天会话的 ID，可以由调用方传入。
-- `run_id` 是这一次执行的 ID，由后端生成，不能手写固定值假装它存在。
-- `status=completed` 表示这次 run 正常完成。
-
-这条请求的上层到下层路径是：
-
-```text
-POST /api/after-sales/runs
-  -> after_sales_runs.py
-  -> AfterSalesAssistantService.run()
-  -> WorkflowEngine.stream_run()
-  -> ConversationService / ConversationGraph
-  -> LLM 判断要调用 get_order_detail
-  -> InlineToolExecutor 执行工具
-  -> 售后 capability 里的 get_order_detail handler
-  -> repository.get_order()
-  -> 返回工具结果
-  -> LLM 组织最终中文回答
-  -> RunResponse
-```
-
-第一次读代码时，按这个顺序读：
-
-```text
-1. src/app_api/routers/after_sales_runs.py
-2. src/app_api/schemas/runs.py
-3. src/business_service/after_sales/application/services/assistant_service.py
-4. src/business_service/after_sales/application/capability/capability.py
-5. src/agent_service/infrastructure/workflow/workflow_engine.py
-```
-
-现在仍然不要深入 `nodes.py`。你先知道 `WorkflowEngine` 后面会进入 Agent 运行时就够了。
-
----
-
-## 5. 第四步：理解 tool calling
-
-Agent 不会直接查数据库。它只是会决定“要不要调用某个工具”。
-
-售后业务层把 6 个动作交给 Agent：
-
-| 工具名 | 作用 |
-| --- | --- |
-| `get_order_detail` | 查订单 |
-| `get_shipment_detail` | 查物流 |
-| `create_ticket` | 建售后工单 |
-| `get_ticket_detail` | 查工单 |
-| `submit_refund_request` | 提交退款申请 |
-| `search_after_sales_policy` | 搜索售后政策 |
-
-这些动作定义在：
-
-```text
-src/business_service/after_sales/application/capability/capability.py
-```
-
-新手可以这样理解 tool calling：
-
-```text
-用户说：查一下订单 ORD123
-  -> LLM 判断：这需要调用 get_order_detail
-  -> LLM 生成工具参数：{"order_id": "ORD123"}
-  -> 后端执行 Python 函数
-  -> Python 函数查数据库
-  -> 工具结果返回给 LLM
-  -> LLM 用工具结果回答用户
-```
-
-核心不是“模型真的懂业务数据库”，而是：
-
-> 模型只负责选择工具和生成参数，真正的业务动作仍然由 Python 后端执行。
-
-这里能看出三层架构的价值：
-
-- `business_service.after_sales` 知道有哪些售后工具。
-- `agent_service` 不知道售后，只知道如何执行一组 `AgentActionDefinition`。
-- `app_api` 只负责把 HTTP 请求送进来，把结果返回出去。
-
----
-
-## 6. 第五步：触发一次人工审批
-
-退款是这个项目最值得学习的链路，因为它不是简单问答，而是会暂停和恢复。
-
-调用流式接口：
+SSE run：
 
 ```bash
 curl -N -X POST http://127.0.0.1:8000/api/after-sales/runs/stream \
   -H "Content-Type: application/json" \
-  -d '{
-    "message": "订单 ORD123 退款 200，商品破损",
-    "session_id": "guide-session-refund"
-  }'
+  -d '{"message":"订单 ORD123 退款 200，商品破损","session_id":"refund-demo-1"}'
 ```
 
-这个接口返回的是 SSE 事件流。你看到的不是一个普通 JSON，而是一串事件：
-
-```text
-event: run.started
-data: {"run_id":"run-...","session_id":"guide-session-refund"}
-
-event: action.required
-data: {"run_id":"run-...","pending_action":{...}}
-
-event: run.completed
-data: {"run_id":"run-...","status":"awaiting_action",...}
-```
-
-这里最容易误解：
-
-> `run.completed` 只是表示这次 HTTP 流结束了，不一定表示业务完成。
-
-如果里面的 `status` 是 `awaiting_action`，说明 run 已经暂停，正在等待人工审批。
-
-从 `run.started` 事件里复制真实的 `run_id`。下面用 `<RUN_ID>` 代替。
-
-查询当前 run 状态：
-
-```bash
-curl http://127.0.0.1:8000/api/after-sales/runs/<RUN_ID>
-```
-
-如果返回 `awaiting_action`，说明中断成功。
-
-### 6.1 为什么这次会触发审批
-
-审批规则在：
-
-```text
-src/business_service/after_sales/application/capability/capability.py
-```
-
-函数是：
-
-```text
-evaluate_refund_approval()
-```
-
-规则大意：
-
-- 金额超过 100 元，需要审批。
-- 原因包含“破损”或“质量问题”，需要审批。
-- 如果两个条件都命中，风险等级更高。
-
-也就是说，这不是 LLM 自己决定要不要审批。审批规则在业务代码里。
-
-这点很重要：
-
-> 高风险控制不能完全交给模型自由发挥，必须落在确定性的业务规则里。
-
----
-
-## 7. 第六步：批准后恢复执行
-
-批准 pending action：
+审批恢复：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/after-sales/actions \
   -H "Content-Type: application/json" \
-  -d '{
-    "run_id": "<RUN_ID>",
-    "action_id": "call_submit_refund_request",
-    "decision": "approved"
-  }'
+  -d '{"run_id":"run-替换成真实值","action_id":"call_submit_refund_request","decision":"approved"}'
 ```
 
-批准后，系统不是新建一个 run，而是恢复原来的 run。
-
-恢复路径是：
-
-```text
-POST /api/after-sales/actions
-  -> after_sales_approvals.py
-  -> AfterSalesAssistantService.act()
-  -> WorkflowEngine.stream_action()
-  -> ConversationService.stream_resume()
-  -> LangGraph 从暂停点继续
-  -> 执行 submit_refund_request
-  -> 写入 refund_requests
-  -> 写入 approval_records
-  -> 写入 audit_logs
-  -> 返回 completed
-```
-
-查看审计日志：
+质量门槛：
 
 ```bash
-curl "http://127.0.0.1:8000/api/after-sales/audit-logs?run_id=<RUN_ID>"
+uv run pytest -q
+uv run ruff check src tests scripts
+uv run mypy src
 ```
 
-你应该能看到类似事件：
+### 常见错误
 
-- `approval_requested`
-- `approval_resolved`
+- LLM key 缺失：`/health` 会显示 degraded，`/api/after-sales/runs` 返回 503。
+- 数据库缺表：运行 `make migrate` 或本地设置 `AUTO_CREATE_SCHEMA=true`。
+- SSE 没有事件：确认客户端使用 `curl -N`，不要被缓冲。
+- 审批 action_id 错误：接口应返回 409，approval record 仍保持 pending。
+- PostgreSQL runtime URL 写成同步驱动：项目会把 `postgresql://` 转成 `postgresql+psycopg://` 给 SQLAlchemy async 使用。
+- MCP server 连接失败：应用可以继续启动，`/health` 的 `mcp.ok` 为 `false`。
 
-### 7.1 这一阶段的验收问题
+### 面试时怎么讲
 
-你应该能回答：
+可以这样说：
 
-1. 为什么退款第一次没有直接落库？
-2. `pending_action` 里保存了什么？
-3. 为什么审批接口要传 `run_id`？
-4. 为什么审批通过后是恢复原 run？
-5. 审批记录和审计日志分别有什么作用？
+> 这个项目的最终请求链路是 FastAPI route 进入 assistant service，assistant service 调用 LangChain runtime，runtime 根据 AgentDefinition 调用 ToolSpec，ToolSpec handler 再调用售后业务 service，业务 service 通过 Unit of Work 操作数据库。运行过程会投影成 tool log、approval record 和 audit log。高风险退款通过 LangGraph interrupt 暂停，审批后 resume 同一个 run。
 
 ---
 
-## 8. 第七步：正式读 API 层
-
-现在你已经看过系统能做什么，可以开始读 `app_api`。
-
-读法不要从文件名猜职责，而是沿请求入口读。
-
-### 8.1 `main.py`：创建应用和挂路由
-
-文件：
-
-```text
-src/app_api/main.py
-```
-
-你只需要关注：
-
-- `create_app()`
-- FastAPI app title/version
-- CORS middleware
-- `include_router(...)`
-- lifespan 里调用 `build_container(...)`
-
-它说明哪些路由真的挂到了应用上：
-
-```text
-health
-after_sales_runs
-after_sales_approvals
-after_sales_resources
-```
-
-### 8.2 `bootstrap.py`：装配所有对象
-
-文件：
-
-```text
-src/app_api/bootstrap.py
-```
-
-这是全项目非常关键的上层装配点。
-
-它会创建：
-
-```text
-runtime_state_store
-business_database
-repository
-chat_client
-capability
-workflow_engine
-assistant_service
-```
-
-你可以把它理解成“开店前把所有岗位的人和工具准备好”。
-
-其中最关键的一段逻辑是：
-
-```text
-repository -> build_capability(repository)
-chat_client + action_dispatcher + state_store -> WorkflowEngine
-WorkflowEngine + capability + repository -> AfterSalesAssistantService
-```
-
-这说明：
-
-- 售后业务能力来自 repository。
-- Agent runtime 来自 `WorkflowEngine`。
-- `AfterSalesAssistantService` 是售后业务和 Agent runtime 的连接点。
-
-### 8.3 `deps.py`：FastAPI 依赖注入
-
-文件：
-
-```text
-src/app_api/deps.py
-```
-
-它负责：
-
-- 从 `request.app.state.container` 取容器。
-- 校验 `X-API-Key`。
-- 给 router 提供 repository。
-- 给 router 提供 `AfterSalesAssistantService`。
-
-如果 LLM 没准备好，普通资源接口还能用，但 Agent 接口会返回 503。
-
-### 8.4 routers：HTTP 接口分组
-
-文件：
-
-```text
-src/app_api/routers/after_sales_resources.py
-src/app_api/routers/after_sales_runs.py
-src/app_api/routers/after_sales_approvals.py
-src/app_api/routers/health.py
-```
-
-按用途看：
-
-| 文件 | 负责 |
-| --- | --- |
-| `health.py` | 健康检查 |
-| `after_sales_resources.py` | 普通售后资源 API |
-| `after_sales_runs.py` | 创建 Agent run、流式 run、查询 run |
-| `after_sales_approvals.py` | 提交人工审批动作 |
-
-### 8.5 schemas：API 请求和响应
-
-文件：
-
-```text
-src/app_api/schemas/runs.py
-src/app_api/schemas/actions.py
-```
-
-这里只保留 API 层自己的请求响应模型。
-
-例如：
-
-- `CreateRunRequest`
-- `RunResponse`
-- `ActionRequest`
-
-售后领域的订单、退款、工单模型直接来自：
-
-```text
-src/business_service/after_sales/domain/entities.py
-```
-
-这能减少空包装 DTO。
-
----
-
-## 9. 第八步：再读售后业务层
-
-现在读 `business_service.after_sales`。
-
-不要一上来就看数据库模型，先看业务服务和能力定义。
-
-### 9.1 `AfterSalesAssistantService`：业务和 Agent 的接缝
-
-文件：
-
-```text
-src/business_service/after_sales/application/services/assistant_service.py
-```
-
-这个类很重要。它不是通用 Agent runtime，也不是普通 repository。
-
-它负责：
-
-- 调用 `WorkflowEngine` 开始 run。
-- 调用 `WorkflowEngine` 恢复审批中的 run。
-- 把 Agent 事件记录成业务侧日志。
-- 遇到工具开始/完成时，写 `tool_call_logs`。
-- 遇到审批请求/审批结果时，写 `approval_records` 和 `audit_logs`。
-
-也就是说，它是：
-
-```text
-售后业务层
-  和
-通用 Agent runtime
-  之间的适配服务
-```
-
-它知道售后 repository，也知道 Agent events，但它不实现 LangGraph 节点。
-
-### 9.2 `capability.py`：把售后能力交给 Agent
-
-文件：
-
-```text
-src/business_service/after_sales/application/capability/capability.py
-```
-
-这里定义了：
-
-- Agent 角色：售后客服专家。
-- Agent 目标：查单、查物流、建工单、退款、政策解释。
-- 工具列表：6 个售后动作。
-- 审批规则：`evaluate_refund_approval()`。
-
-这层的核心动作是：
-
-```text
-售后业务函数
-  -> AgentActionDefinition
-  -> AgentCapability
-  -> 交给 WorkflowEngine
-```
-
-这就是为什么 `agent_service` 可以保持通用。它不需要知道售后业务，只需要读 `AgentCapability`。
-
-### 9.3 `entities.py`：业务数据模型
-
-文件：
-
-```text
-src/business_service/after_sales/domain/entities.py
-```
-
-这里是 Pydantic 模型，例如：
-
-- `OrderRead`
-- `ShipmentRead`
-- `TicketCreate`
-- `TicketRead`
-- `RefundRequestCreate`
-- `RefundRequestRead`
-- `AuditLogRead`
-- `OrderLookupInput`
-
-你可以把它理解成“业务数据长什么样”。
-
-### 9.4 `repositories.py`：业务数据库读写
-
-文件：
-
-```text
-src/business_service/after_sales/infrastructure/persistence/sqlalchemy/repositories.py
-```
-
-repository 是业务层访问数据库的门。
-
-常见方法：
-
-- `get_order()`
-- `get_shipment()`
-- `create_ticket()`
-- `create_refund_request()`
-- `start_tool_call()`
-- `finish_tool_call()`
-- `request_approval()`
-- `resolve_approval()`
-- `record_audit_log()`
-- `list_audit_logs()`
-
-第一次读时，不要纠结 SQLAlchemy 的所有语法。先看每个方法“读什么表、写什么表、返回什么业务模型”。
-
-### 9.5 `models.py`：数据库表结构
-
-文件：
-
-```text
-src/business_service/after_sales/infrastructure/persistence/sqlalchemy/models.py
-```
-
-这里是 ORM 表模型。它对应数据库里的表：
-
-- `customers`
-- `orders`
-- `shipments`
-- `tickets`
-- `refund_requests`
-- `approval_records`
-- `audit_logs`
-- `tool_call_logs`
-- `policy_articles`
-
-注意学习顺序：
-
-```text
-先看 API 返回什么
-  -> 再看 repository 怎么查
-  -> 最后看 ORM 表字段
-```
-
-不要反过来从表结构开始学。
-
----
-
-## 10. 第九步：最后再读 Agent 通用层
-
-现在才进入 `agent_service`。
-
-这层是本项目最有工程价值、也最容易把新手绕晕的部分。读的时候一定按从外到内的顺序。
-
-### 10.1 contracts：先看 Agent 层对外承诺什么
-
-目录：
-
-```text
-src/agent_service/contracts/
-```
-
-先看：
-
-```text
-contracts/capability.py
-contracts/actions.py
-contracts/events.py
-contracts/models.py
-```
-
-你要理解几个词：
-
-| 名称 | 解释 |
-| --- | --- |
-| `AgentCapability` | 一个业务模块交给 Agent 的能力包 |
-| `AgentActionDefinition` | 一个可被 Agent 调用的动作定义 |
-| `AgentEvent` | Agent 运行过程中吐出的事件 |
-| `AgentRunResult` | 一次 run 的最终结果 |
-| `RunState` | 某个 run 当前的状态 |
-
-这一层很重要，因为它是 `business_service` 和 `agent_service` 的接口契约。
-
-### 10.2 `WorkflowEngine`：Agent 运行入口
-
-文件：
-
-```text
-src/agent_service/infrastructure/workflow/workflow_engine.py
-```
-
-它是通用 Agent runtime 的门面。
-
-你先看三个方法：
-
-- `stream_run(...)`
-- `stream_action(...)`
-- `get_state(...)`
-
-它不关心订单、退款、物流。它只关心：
-
-```text
-capability
-input
-session_id
-actor
-run_id
-decision
-```
-
-这说明隔离是真的：业务通过 `AgentCapability` 传进来，runtime 只负责运行。
-
-### 10.3 dispatcher 和 inline tools：把业务动作变成工具
-
-文件：
-
-```text
-src/agent_service/infrastructure/actions/dispatcher.py
-src/agent_service/tools/inline.py
-src/agent_service/tools/models.py
-```
-
-这里做的事：
-
-```text
-AgentActionDefinition
-  -> LangChain StructuredTool
-  -> InlineToolExecutor
-  -> 执行业务 handler
-  -> ToolMessage
-```
-
-你可以把它理解成“把业务函数转换成 LLM 能调用的工具”。
-
-### 10.4 conversation：LangGraph 对话流程
-
-目录：
-
-```text
-src/agent_service/conversation/
-```
-
-建议阅读顺序：
-
-```text
-service.py
-graph.py
-state.py
-approval.py
-nodes.py
-errors.py
-```
-
-不是先看 `nodes.py`。先看 `service.py`，因为它更像外部入口。
-
-这里的核心流程是：
-
-```text
-stream_message()
-  -> 创建 run
-  -> 调用 LangGraph
-  -> 把内部输出转换成 AgentEvent
-
-stream_resume()
-  -> 根据 run_id 找到暂停状态
-  -> 注入人工 decision
-  -> 从暂停点继续
-```
-
-LangGraph 图可以简化成：
-
-```mermaid
-flowchart TD
-    Start --> Plan[plan: 调 LLM 判断下一步]
-    Plan -->|直接回答| End
-    Plan -->|工具无需审批| Tool[tool_execute: 执行工具]
-    Plan -->|工具需要审批| Approval[approval: 暂停等待人工]
-    Approval -->|批准| Tool
-    Approval -->|拒绝| End
-    Tool --> Plan
-```
-
-### 10.5 llm：模型调用
-
-目录：
-
-```text
-src/agent_service/llm/
-```
-
-这里负责：
-
-- 构造 chat client。
-- 绑定 tools。
-- 调用模型。
-- 重试。
-- 把消息和工具 schema 转成观测 payload。
-
-新手不要先从这里开始，因为这里偏框架适配和工程细节。
-
-### 10.6 state_store：为什么能暂停恢复
-
-目录：
-
-```text
-src/agent_service/infrastructure/state_store/
-```
-
-这里有两类状态：
-
-| 状态 | 存什么 |
-| --- | --- |
-| session transcript | 同一个 `session_id` 下的聊天历史 |
-| LangGraph checkpoint | 某个 `run_id` 的执行进度和暂停点 |
-
-当前有两种实现：
-
-- `InMemoryStateStore`：本地开发用，服务重启后状态丢失。
-- `LangGraphPostgresStateStore`：更接近生产，用 Postgres 持久化状态。
-
----
-
-## 11. `session_id` 和 `run_id` 一定要分清
-
-这是新手最容易混的地方。
-
-`session_id` 是一段聊天。
-
-比如用户在一个客服窗口里连续说：
-
-```text
-查订单 ORD123
-再看一下物流
-我要退款
-```
-
-这几句话可以属于同一个 `session_id`。
-
-`run_id` 是一次执行。
-
-每次你调用 `/api/after-sales/runs` 或 `/api/after-sales/runs/stream`，后端都会生成一个新的 `run_id`。
-
-关系是：
-
-```text
-一个 session_id
-  可以有多个 run_id
-
-一个 run_id
-  对应一次 Agent 执行
-  如果被审批中断，恢复时继续这个 run_id
-```
-
-所以：
-
-- 发新消息，用 `session_id`。
-- 查某次执行状态，用 `run_id`。
-- 审批恢复，用 `run_id`。
-
----
-
-## 12. business DB 和 runtime state store 不是一回事
-
-这个项目有两类存储，千万别混。
-
-### 12.1 business DB：业务事实
-
-业务数据库保存：
-
-- 客户
-- 订单
-- 物流
-- 工单
-- 退款申请
-- 审批记录
-- 审计日志
-- 工具调用日志
-- 售后政策文章
-
-默认 SQLite 文件：
-
-```text
-after_sales_mvp.db
-```
-
-相关文件：
-
-```text
-scripts/seed.py
-src/business_service/after_sales/infrastructure/persistence/sqlalchemy/models.py
-src/business_service/after_sales/infrastructure/persistence/sqlalchemy/repositories.py
-```
-
-### 12.2 runtime state store：Agent 执行状态
-
-runtime state store 保存：
-
-- 当前 run 执行到哪一步。
-- 是否正在等待审批。
-- pending action 是什么。
-- LangGraph checkpoint。
-- session 下的历史消息。
-
-相关文件：
-
-```text
-src/agent_service/infrastructure/state_store/in_memory_store.py
-src/agent_service/infrastructure/state_store/langgraph_postgres_store.py
-src/agent_service/infrastructure/state_store/session_transcript_store.py
-```
-
-一句话：
-
-> business DB 存业务结果，runtime state store 存 Agent 正在怎么跑。
-
----
-
-## 13. 推荐测试阅读顺序
-
-测试比抽象解释更适合新手。因为测试是一条条可执行故事。
-
-建议这样读：
-
-### 13.1 先读端到端 API 测试
-
-文件：
-
-```text
-tests/new_architecture/test_app_api.py
-```
-
-它覆盖：
-
-- `/health`
-- 普通资源接口
-- `/runs`
-- `/runs/stream`
-- `/actions`
-- `/audit-logs?run_id=...`
-- 审批记录、退款记录、工具日志是否落库
-
-这是最适合 0 基础读者的测试文件。
-
-### 13.2 再读 Agent runtime 测试
-
-文件：
-
-```text
-tests/test_conversation_service.py
-```
-
-它不关心售后业务，而是测试通用 Agent runtime：
-
-- 工具调用后回答。
-- 工具需要审批时暂停。
-- 拒绝审批后结束。
-- 同一个 session 可以有多个 run。
-- 多个 pending run 可以共存。
-
-这能帮助你理解 `agent_service` 为什么是通用层。
-
-### 13.3 再读工具和 LLM 测试
-
-文件：
-
-```text
-tests/test_inline_tools.py
-tests/test_llm_service.py
-```
-
-它们更偏内部机制：
-
-- 工具执行成功/失败。
-- 工具参数校验。
-- LLM 调用重试。
-- 消息 payload 记录。
-
-### 13.4 最后读配置测试
-
-文件：
-
-```text
-tests/test_settings.py
-```
-
-它帮助你理解：
-
-- dev 和 production 配置差异。
-- `API_KEY` 什么时候必填。
-- Postgres runtime store 什么时候必填。
-- 环境变量拼错时如何提示。
-
----
-
-## 14. 如果你要新增一个业务动作
-
-假设你要新增“换货申请”。
-
-仍然按上层到下层做，不要一上来改数据库。
-
-推荐顺序：
-
-1. 先写清楚 API 或 Agent 要接收什么输入。
-2. 如果要暴露普通接口，改 `src/app_api/routers/after_sales_resources.py`。
-3. 如果只是 Agent 可调用动作，先改 `src/business_service/after_sales/application/capability/capability.py`。
-4. 如果需要新的输入模型，改 `src/business_service/after_sales/domain/entities.py`。
-5. 如果需要落库，再改 `models.py` 和 `repositories.py`。
-6. 如果需要人工审批，给 `AgentActionDefinition` 增加 `approval_evaluator`。
-7. 补 `tests/new_architecture/test_app_api.py` 的端到端测试。
-8. 必要时再补 `tests/test_conversation_service.py` 或工具层测试。
-
-判断标准：
-
-```text
-只是让 Agent 多一个动作
-  -> 优先改 capability
-
-需要普通 HTTP 接口
-  -> 增加 app_api router
-
-需要保存业务结果
-  -> 增加 repository / model
-
-需要暂停审批
-  -> 增加 approval_evaluator
+## 课程最终验收清单
+
+学习者完成本项目后，应能独立做到：
+
+- 从空目录创建 `src` layout Python 后端项目。
+- 用 uv 管理依赖和虚拟环境。
+- 用 FastAPI 创建 app、router、schema 和 dependency。
+- 用 `pydantic-settings` 管理 `.env`。
+- 用 SQLAlchemy 建模业务表。
+- 用 Repository 和 Unit of Work 管理数据访问和事务。
+- 写普通售后 REST API。
+- 封装 DeepSeek/OpenAI chat model。
+- 定义 Agent contract、ToolSpec 和 AgentDefinition。
+- 把业务 service 适配成 Agent tool。
+- 用 LangChain `create_agent` 执行工具调用。
+- 用 LangGraph checkpoint 支持审批中断和恢复。
+- 用 SSE 输出运行事件。
+- 写 pytest、ruff、mypy 质量门槛。
+- 用 seed、migration、compose 支持本地开发和部署。
+
+最终必须能通过：
+
+```bash
+uv run pytest -q
+uv run ruff check src tests scripts
+uv run mypy src
 ```
 
 ---
 
-## 15. 这个项目到底适合学什么
+## 项目总结与面试表达
 
-这个项目不是模型算法项目。它不是教你训练大模型。
+一句话项目介绍：
 
-它更像：
+> 我做的是一个售后客服 Agent 后端，使用 FastAPI 暴露 API，用 SQLAlchemy 管理售后业务数据，用 LangChain 和 LangGraph 实现工具调用、审批中断和恢复执行。
 
-```text
-Agent 应用工程
-Agent runtime harness
-LLM 业务系统集成
-生产型 Agent 后端入门
-```
+架构亮点：
 
-你能学到：
+- 业务层和 Agent 层双向不依赖。
+- Agent 工具只是业务服务的 adapter。
+- 普通 REST API 和 Agent API 共用同一套售后业务能力。
+- 高风险退款用业务审批规则判断，用 LangGraph interrupt 暂停。
+- `run_id` 和 `session_id` 分离，支持同一 session 下多个 run。
+- 业务数据库、LangGraph checkpoint、session transcript 三类状态分开。
+- 测试用 deterministic model，不依赖真实 LLM。
 
-- FastAPI 后端入口怎么组织。
-- 业务层和 Agent 层怎么隔离。
-- tool calling 怎么落到真实 Python 函数。
-- 高风险动作如何 human-in-the-loop。
-- Agent run 如何暂停和恢复。
-- 业务数据库和 runtime state store 为什么分开。
-- 审计日志、工具日志、审批记录怎么落库。
-- 如何用测试证明 Agent 流程可控。
-
-你学不到或学得不深：
-
-- 大模型训练。
-- Transformer 原理。
-- GPU 推理优化。
-- 高级 RAG 评测。
-- 多 Agent 复杂协作。
-- 前端产品设计。
-
-所以它适合的岗位方向是：
-
-- AI 应用开发工程师。
-- LLM 应用工程师。
-- Agent 后端工程师。
-- 大模型应用后端。
-- AI workflow / Agent platform 工程师。
-
----
-
-## 16. 新手 FAQ
-
-### 16.1 什么是 HTTP API？
-
-HTTP API 就是后端暴露给前端、脚本或其他服务调用的入口。
-
-例如：
+可以展开讲的请求链路：
 
 ```text
-GET /api/after-sales/orders/ORD123
+POST /api/after-sales/runs
+  -> CreateRunRequest
+  -> AfterSalesAssistantService
+  -> LangChainAgentRuntime
+  -> AgentDefinition / ToolSpec
+  -> AfterSalesService
+  -> AfterSalesUnitOfWork
+  -> SqlAlchemyAfterSalesRepository
+  -> business database
 ```
 
-意思是：“请后端返回订单 `ORD123` 的信息。”
-
-### 16.2 什么是 Agent？
-
-在这个项目里，Agent 可以先简单理解为：
-
-> 会读用户输入、会决定是否调用工具、会根据工具结果回答用户的程序。
-
-它背后仍然是：
-
-- LLM
-- prompt
-- tools
-- Python 函数
-- 状态管理
-- 数据库
-
-### 16.3 什么是 tool calling？
-
-tool calling 就是模型生成一个“我要调用哪个工具、参数是什么”的结构化请求。
-
-例如用户说：
+可以展开讲的审批链路：
 
 ```text
-查一下订单 ORD123
+用户要求高风险退款
+  -> Agent 计划调用 submit_refund_request
+  -> ApprovalPolicy 判断需要人工审批
+  -> LangGraph interrupt 暂停 run
+  -> API 返回 awaiting_action
+  -> 人工调用 /api/after-sales/actions
+  -> runtime resume
+  -> 工具真正执行
+  -> refund request、tool log、approval record、audit log 落库
 ```
 
-模型可能生成：
+不要把这个项目说成通用 Agent 平台。更准确的说法是：
 
-```json
-{
-  "tool_name": "get_order_detail",
-  "args": {
-    "order_id": "ORD123"
-  }
-}
-```
-
-真正查数据库的是后端 Python 函数，不是模型。
-
-### 16.4 为什么普通查单不一定要走 Agent？
-
-因为普通查单是确定性操作。
-
-如果你已经知道订单号，直接调用：
-
-```text
-GET /api/after-sales/orders/ORD123
-```
-
-更快、更稳定、更便宜。
-
-Agent 适合处理自然语言和不确定意图：
-
-```text
-用户说了一句话
-  -> 系统要判断他是查单、查物流、建工单还是退款
-```
-
-### 16.5 为什么 `agent_service` 不能 import 售后业务？
-
-因为 `agent_service` 是通用发动机。
-
-如果它 import 售后业务，它就变成“售后专用 Agent”，以后很难复用到别的业务。
-
-当前设计是：
-
-```text
-business_service.after_sales
-  -> 把售后能力包装成 AgentCapability
-  -> 交给 agent_service 运行
-```
-
-这样以后新增别的业务，也可以复用 `agent_service`。
-
-### 16.6 为什么审批要暂停后恢复？
-
-因为高风险动作不能让模型直接执行。
-
-系统会：
-
-1. 识别高风险工具调用。
-2. 保存 pending action。
-3. 暂停 run。
-4. 等人工批准或拒绝。
-5. 根据决定继续或结束。
-
-这就是 human-in-the-loop。
-
-### 16.7 为什么测试里有 fake LLM？
-
-真实 LLM 不稳定，也需要网络和 API key。
-
-测试需要确定性，所以项目用假的 chat client 模拟模型输出。这样可以稳定测试：
-
-- 工具调用。
-- 审批暂停。
-- 审批恢复。
-- run 状态。
-- 日志落库。
-
----
-
-## 17. 最终学习路线
-
-如果你从今天开始学，按这个顺序来：
-
-1. 跑 `uv sync --extra dev`。
-2. 跑 `make seed`。
-3. 跑 `make start`。
-4. 打开 `http://127.0.0.1:8000/docs`。
-5. 调 `/health`。
-6. 调订单、物流、客户、政策、工单这些普通资源接口。
-7. 调 `/api/after-sales/runs`，让 Agent 查订单。
-8. 调 `/api/after-sales/runs/stream`，触发退款审批。
-9. 调 `/api/after-sales/actions`，恢复审批中的 run。
-10. 查 `/api/after-sales/audit-logs?run_id=<RUN_ID>`。
-11. 读 `src/app_api/main.py` 和 `bootstrap.py`。
-12. 读 `src/app_api/routers/`。
-13. 读 `AfterSalesAssistantService`。
-14. 读 `capability.py`。
-15. 读 `WorkflowEngine`。
-16. 读 `agent_service/contracts/`。
-17. 读 `agent_service/tools/`。
-18. 读 `agent_service/conversation/service.py`。
-19. 最后读 `graph.py`、`state.py`、`nodes.py`。
-20. 读 `tests/new_architecture/test_app_api.py`，用测试验证你理解的链路。
-
-记住这句话：
-
-> 先跑通，再调接口；先看入口，再看业务；先理解链路，再研究底层。
-
-这就是这个项目最适合 0 基础学习者的阅读顺序。
+> 它是一个业务边界清晰的售后 Agent 后端。业务层稳定，Agent runtime 可替换，二者通过 app/API adapter 组合。

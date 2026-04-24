@@ -5,7 +5,6 @@ import pathlib
 import re
 import sys
 
-
 FENCE_RE = re.compile(r"```python\n.*?\n```", re.S)
 
 

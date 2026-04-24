@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from math import ceil
+from typing import Any
 
 import tiktoken
 
@@ -12,7 +13,7 @@ def _heuristic_token_count(text: str) -> int:
 
 
 @lru_cache(maxsize=16)
-def _encoding_for_model(model: str):
+def _encoding_for_model(model: str) -> Any | None:
     # 根据模型名选择 tiktoken 编码器，并做一个很小的缓存，
     # 避免同一模型重复解析编码器。
     resolved_model = model or "deepseek-chat"

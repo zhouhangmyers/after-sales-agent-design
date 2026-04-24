@@ -3,9 +3,20 @@ from __future__ import annotations
 import os
 from difflib import get_close_matches
 from pathlib import Path
+from typing import Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class MCPServerConfig(BaseModel):
+    transport: Literal["http", "streamable_http", "stdio"]
+    url: str | None = None
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    headers: dict[str, str] = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class AppSettings(BaseSettings):
@@ -22,9 +33,11 @@ class AppSettings(BaseSettings):
     llm_timeout_seconds: float = Field(default=5.0, ge=0.1, le=300.0)
     llm_max_retries: int = Field(default=1, ge=0, le=10)
     deepseek_api_key: SecretStr | None = None
+    openai_api_key: SecretStr | None = None
 
     max_steps: int = Field(default=4, ge=1, le=50)
     approval_timeout_seconds: int = Field(default=900, ge=1, le=604800)
+    mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -93,6 +106,16 @@ class AppSettings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_runtime_requirements(self) -> AppSettings:
+        for server_name, server_config in self.mcp_servers.items():
+            if server_config.transport in {"http", "streamable_http"} and not server_config.url:
+                raise ValueError(
+                    f"MCP server `{server_name}` requires `url` when transport is http"
+                )
+            if server_config.transport == "stdio" and not server_config.command:
+                raise ValueError(
+                    f"MCP server `{server_name}` requires `command` when transport is stdio"
+                )
+
         if not self.is_production:
             return self
 
@@ -107,5 +130,9 @@ class AppSettings(BaseSettings):
         if self.llm_provider == "deepseek" and self.deepseek_api_key is None:
             raise ValueError(
                 "DEEPSEEK_API_KEY is required when llm_provider=deepseek and APP_ENV=production"
+            )
+        if self.llm_provider == "openai" and self.openai_api_key is None:
+            raise ValueError(
+                "OPENAI_API_KEY is required when llm_provider=openai and APP_ENV=production"
             )
         return self

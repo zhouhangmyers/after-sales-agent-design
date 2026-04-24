@@ -60,7 +60,7 @@ class RunFailedEvent:
     error: AgentError
 
 
-type AgentEvent = (
+type RunEvent = (
     RunStartedEvent
     | OutputDeltaEvent
     | ActionStartedEvent

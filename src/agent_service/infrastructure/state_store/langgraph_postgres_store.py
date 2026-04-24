@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from contextlib import ExitStack
+from contextlib import AsyncExitStack
 
 from langchain_core.messages import BaseMessage
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.postgres import PostgresSaver
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from agent_service.contracts.models import RuntimeStoreStatus
 from agent_service.llm.payloads import messages_from_payload, messages_payload
@@ -17,16 +16,16 @@ from agent_service.llm.payloads import messages_from_payload, messages_payload
 class LangGraphPostgresStateStore:
     def __init__(self, conn_string: str) -> None:
         self._conn_string = conn_string
-        self._exit_stack: ExitStack | None = None
-        self._checkpointer: BaseCheckpointSaver | None = None
-        self._engine: Engine | None = None
+        self._exit_stack: AsyncExitStack | None = None
+        self._checkpointer: AsyncPostgresSaver | None = None
+        self._engine: AsyncEngine | None = None
 
     async def ensure_initialized(self) -> None:
-        self._ensure_open()
+        await self._ensure_open()
 
     async def healthcheck(self) -> RuntimeStoreStatus:
         try:
-            self._ensure_open()
+            await self._ensure_open()
         except Exception as exc:
             return RuntimeStoreStatus(
                 ok=False,
@@ -35,19 +34,18 @@ class LangGraphPostgresStateStore:
             )
         return RuntimeStoreStatus(ok=True, backend="langgraph-postgres", detail=None)
 
-    def get_checkpointer(self) -> BaseCheckpointSaver:
-        self._ensure_open()
+    def get_checkpointer(self) -> AsyncPostgresSaver:
         if self._checkpointer is None:
             raise RuntimeError("langgraph checkpointer is not initialized")
         return self._checkpointer
 
     async def get_session_messages(self, *, session_id: str) -> list[BaseMessage]:
-        self._ensure_open()
+        await self._ensure_open()
         if self._engine is None:
             raise RuntimeError("runtime transcript engine is not initialized")
 
-        with self._engine.begin() as connection:
-            rows = connection.execute(
+        async with self._engine.begin() as connection:
+            rows = await connection.execute(
                 text(
                     """
                     SELECT messages
@@ -58,13 +56,13 @@ class LangGraphPostgresStateStore:
                 ),
                 {"session_id": session_id},
             )
-            payload: list[dict[str, object]] = []
-            for row in rows:
-                messages = row[0]
-                if isinstance(messages, list):
-                    payload.extend(messages)
-                elif isinstance(messages, str):
-                    payload.extend(json.loads(messages))
+        payload: list[dict[str, object]] = []
+        for row in rows:
+            messages = row[0]
+            if isinstance(messages, list):
+                payload.extend(messages)
+            elif isinstance(messages, str):
+                payload.extend(json.loads(messages))
         return messages_from_payload(payload)
 
     async def upsert_session_messages(
@@ -74,13 +72,13 @@ class LangGraphPostgresStateStore:
         run_id: str,
         messages: Sequence[BaseMessage],
     ) -> None:
-        self._ensure_open()
+        await self._ensure_open()
         if self._engine is None:
             raise RuntimeError("runtime transcript engine is not initialized")
 
         payload = json.dumps(messages_payload(list(messages)), ensure_ascii=False)
-        with self._engine.begin() as connection:
-            connection.execute(
+        async with self._engine.begin() as connection:
+            await connection.execute(
                 text(
                     """
                     INSERT INTO agent_session_transcripts (session_id, run_id, messages)
@@ -98,24 +96,26 @@ class LangGraphPostgresStateStore:
                 },
             )
 
-    def close(self) -> None:
+    async def close(self) -> None:
         if self._exit_stack is not None:
-            self._exit_stack.close()
+            await self._exit_stack.aclose()
             self._exit_stack = None
             self._checkpointer = None
         if self._engine is not None:
-            self._engine.dispose()
+            await self._engine.dispose()
             self._engine = None
 
-    def _ensure_open(self) -> None:
+    async def _ensure_open(self) -> None:
         if self._checkpointer is not None and self._engine is not None:
             return
-        exit_stack = ExitStack()
-        saver = exit_stack.enter_context(PostgresSaver.from_conn_string(self._conn_string))
-        saver.setup()
-        engine = create_engine(self._conn_string)
-        with engine.begin() as connection:
-            connection.execute(
+        exit_stack = AsyncExitStack()
+        saver = await exit_stack.enter_async_context(
+            AsyncPostgresSaver.from_conn_string(self._conn_string)
+        )
+        await saver.setup()
+        engine = create_async_engine(_sqlalchemy_async_url(self._conn_string))
+        async with engine.begin() as connection:
+            await connection.execute(
                 text(
                     """
                     CREATE TABLE IF NOT EXISTS agent_session_transcripts (
@@ -130,7 +130,7 @@ class LangGraphPostgresStateStore:
                     """
                 )
             )
-            connection.execute(
+            await connection.execute(
                 text(
                     """
                     CREATE INDEX IF NOT EXISTS ix_agent_session_transcripts_session_order
@@ -141,3 +141,9 @@ class LangGraphPostgresStateStore:
         self._exit_stack = exit_stack
         self._checkpointer = saver
         self._engine = engine
+
+
+def _sqlalchemy_async_url(conn_string: str) -> str:
+    if conn_string.startswith("postgresql://"):
+        return conn_string.replace("postgresql://", "postgresql+psycopg://", 1)
+    return conn_string

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import httpx
 import pytest
@@ -9,15 +11,20 @@ from sqlalchemy import inspect, select
 from app_api.cli.migrate import run_migrations
 from app_api.migrations import upgrade_business_database
 from app_api.settings import AppSettings
+from business_service.after_sales.domain.entities import TicketCreate
 from business_service.after_sales.infrastructure.persistence.sqlalchemy.models import (
     ApprovalRecord,
     RefundRequest,
+    Ticket,
     ToolCallLog,
 )
 from business_service.after_sales.infrastructure.persistence.sqlalchemy.session import (
     BusinessDatabase,
 )
-from tests.new_architecture.helpers import (
+from business_service.after_sales.infrastructure.persistence.sqlalchemy.unit_of_work import (
+    SqlAlchemyAfterSalesUnitOfWork,
+)
+from tests.integration.helpers import (
     build_after_sales_app,
     build_health_only_app,
     collect_sse_events,
@@ -26,7 +33,7 @@ from tests.new_architecture.helpers import (
 
 @pytest.mark.asyncio
 async def test_health_starts_without_business_modules(tmp_path: Path) -> None:
-    app = build_health_only_app(tmp_path / "health-only.db")
+    app = await build_health_only_app(tmp_path / "health-only.db")
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
@@ -56,6 +63,11 @@ async def test_health_starts_without_business_modules(tmp_path: Path) -> None:
             "model": "deepseek-chat",
             "detail": "unsupported llm provider: missing-provider",
         },
+        "mcp": {
+            "ok": True,
+            "configured_servers": [],
+            "detail": None,
+        },
     }
     assert run_response.status_code == 503
     assert "assistant service unavailable" in run_response.json()["detail"]
@@ -63,7 +75,7 @@ async def test_health_starts_without_business_modules(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_after_sales_resources_routes_and_sync_run(tmp_path: Path) -> None:
-    app = build_after_sales_app(tmp_path / "after-sales-domain.db")
+    app = await build_after_sales_app(tmp_path / "after-sales-domain.db")
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
@@ -83,6 +95,8 @@ async def test_after_sales_resources_routes_and_sync_run(tmp_path: Path) -> None
                 "/api/after-sales/runs",
                 json={"message": "查一下订单 ORD123", "session_id": "run-order-1"},
             )
+            agents_response = await client.get("/api/agents")
+            tools_response = await client.get("/api/agents/after_sales_assistant/tools")
 
     assert order_response.status_code == 200
     assert order_response.json()["status"] == "shipped"
@@ -98,12 +112,110 @@ async def test_after_sales_resources_routes_and_sync_run(tmp_path: Path) -> None
     assert payload["output"] == "订单 ORD123 当前状态是 shipped，商品为 蓝牙耳机 x1。"
     assert payload["pending_action"] is None
     assert payload["error"] is None
+    assert agents_response.status_code == 200
+    assert agents_response.json() == [
+        {
+            "capability_id": "after_sales_assistant",
+            "name": "After-Sales Assistant",
+            "description": "售后客服 agent，支持查单、物流、工单、退款审批和政策查询。",
+            "tool_count": 6,
+        }
+    ]
+    assert tools_response.status_code == 200
+    tool_names = [item["name"] for item in tools_response.json()["tools"]]
+    assert "get_order_detail" in tool_names
+    assert "submit_refund_request" in tool_names
+    refund_tool = next(
+        item for item in tools_response.json()["tools"] if item["name"] == "submit_refund_request"
+    )
+    assert refund_tool["source"] == "local"
+    assert refund_tool["requires_approval"] is True
+
+
+@pytest.mark.asyncio
+async def test_mcp_load_failure_degrades_health_but_local_agent_still_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = ModuleType("langchain_mcp_adapters")
+    package.__path__ = []
+    client_module = ModuleType("langchain_mcp_adapters.client")
+
+    class FailingMultiServerMCPClient:
+        def __init__(self, server_configs: dict[str, dict[str, object]]) -> None:
+            self.server_configs = server_configs
+
+        async def get_tools(self) -> list[object]:
+            raise RuntimeError("mcp server unavailable")
+
+    client_module.MultiServerMCPClient = FailingMultiServerMCPClient
+    monkeypatch.setitem(sys.modules, "langchain_mcp_adapters", package)
+    monkeypatch.setitem(sys.modules, "langchain_mcp_adapters.client", client_module)
+
+    app = await build_after_sales_app(
+        tmp_path / "after-sales-mcp-failure.db",
+        mcp_servers={
+            "weather": {
+                "transport": "http",
+                "url": "http://localhost:8000/mcp",
+            }
+        },
+    )
+
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            health_response = await client.get("/health")
+            run_response = await client.post(
+                "/api/after-sales/runs",
+                json={"message": "查一下订单 ORD123", "session_id": "mcp-failure-run"},
+            )
+
+    assert health_response.status_code == 200
+    assert health_response.json()["status"] == "degraded"
+    assert health_response.json()["mcp"] == {
+        "ok": False,
+        "configured_servers": ["weather"],
+        "detail": "mcp server unavailable",
+    }
+    assert run_response.status_code == 200
+    assert run_response.json()["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_unit_of_work_rolls_back_uncommitted_repository_writes(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "after-sales-uow-rollback.db"
+    await build_after_sales_app(database_path)
+    database = BusinessDatabase(f"sqlite+pysqlite:///{database_path}")
+
+    with pytest.raises(RuntimeError, match="force rollback"):
+        async with SqlAlchemyAfterSalesUnitOfWork(database.managed_session) as uow:
+            await uow.repository.create_ticket(
+                TicketCreate(
+                    order_id="ORD123",
+                    issue_type="damaged",
+                    summary="rollback this ticket",
+                )
+            )
+            raise RuntimeError("force rollback")
+
+    async with database.managed_session() as session:
+        tickets = list(
+            await session.scalars(
+                select(Ticket).where(Ticket.summary == "rollback this ticket")
+            )
+        )
+    await database.dispose()
+
+    assert tickets == []
 
 
 @pytest.mark.asyncio
 async def test_refund_stream_action_and_audit_projection(tmp_path: Path) -> None:
     database_path = tmp_path / "after-sales-refund.db"
-    app = build_after_sales_app(database_path)
+    app = await build_after_sales_app(database_path)
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
@@ -191,23 +303,23 @@ async def test_refund_stream_action_and_audit_projection(tmp_path: Path) -> None
     assert legacy_audit_response.status_code == 422
 
     database = BusinessDatabase(f"sqlite+pysqlite:///{database_path}")
-    with database.managed_session() as session:
+    async with database.managed_session() as session:
         tool_logs = list(
-            session.scalars(
+            await session.scalars(
                 select(ToolCallLog).where(ToolCallLog.conversation_id == run_id)
             )
         )
         approval_records = list(
-            session.scalars(
+            await session.scalars(
                 select(ApprovalRecord).where(ApprovalRecord.conversation_id == run_id)
             )
         )
         refund_requests = list(
-            session.scalars(
+            await session.scalars(
                 select(RefundRequest).where(RefundRequest.order_id == "ORD123")
             )
         )
-    database.dispose()
+    await database.dispose()
 
     assert len(tool_logs) == 1
     assert tool_logs[0].tool_name == "submit_refund_request"
@@ -225,7 +337,7 @@ async def test_refund_stream_action_and_audit_projection(tmp_path: Path) -> None
 @pytest.mark.asyncio
 async def test_invalid_action_id_does_not_resolve_approval(tmp_path: Path) -> None:
     database_path = tmp_path / "after-sales-invalid-action.db"
-    app = build_after_sales_app(database_path)
+    app = await build_after_sales_app(database_path)
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
@@ -261,15 +373,15 @@ async def test_invalid_action_id_does_not_resolve_approval(tmp_path: Path) -> No
     ]
 
     database = BusinessDatabase(f"sqlite+pysqlite:///{database_path}")
-    with database.managed_session() as session:
+    async with database.managed_session() as session:
         approval_records = list(
-            session.scalars(
+            await session.scalars(
                 select(ApprovalRecord).where(
                     ApprovalRecord.conversation_id == run_id
                 )
             )
         )
-    database.dispose()
+    await database.dispose()
 
     assert len(approval_records) == 1
     assert approval_records[0].status == "pending"
@@ -280,7 +392,7 @@ async def test_invalid_action_id_does_not_resolve_approval(tmp_path: Path) -> No
 async def test_same_session_allows_new_run_while_previous_run_waits_for_approval(
     tmp_path: Path,
 ) -> None:
-    app = build_after_sales_app(tmp_path / "after-sales-session-decouple.db")
+    app = await build_after_sales_app(tmp_path / "after-sales-session-decouple.db")
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
@@ -329,8 +441,8 @@ async def test_business_database_healthcheck_reports_missing_columns_for_legacy_
     )
 
     database = BusinessDatabase(database_url)
-    status = database.healthcheck()
-    database.dispose()
+    status = await database.healthcheck()
+    await database.dispose()
 
     assert status.ok is False
     assert status.schema_ready is False
@@ -358,13 +470,13 @@ async def test_run_migrations_upgrades_legacy_business_database(tmp_path: Path) 
     )
 
     database = BusinessDatabase(database_url)
-    with database.engine.connect() as connection:
+    with database.sync_engine.connect() as connection:
         columns = {
             column["name"]
             for column in inspect(connection).get_columns("approval_records")
         }
-    status = database.healthcheck()
-    database.dispose()
+    status = await database.healthcheck()
+    await database.dispose()
 
     assert "tool_call_id" in columns
     assert status.ok is True
@@ -384,9 +496,9 @@ async def test_run_migrations_upgrades_unversioned_legacy_business_database(
     )
 
     database = BusinessDatabase(database_url)
-    with database.engine.begin() as connection:
+    with database.sync_engine.begin() as connection:
         connection.exec_driver_sql("DROP TABLE alembic_version")
-    database.dispose()
+    await database.dispose()
 
     await run_migrations(
         AppSettings(
@@ -398,14 +510,14 @@ async def test_run_migrations_upgrades_unversioned_legacy_business_database(
     )
 
     database = BusinessDatabase(database_url)
-    with database.engine.connect() as connection:
+    with database.sync_engine.connect() as connection:
         columns = {
             column["name"]
             for column in inspect(connection).get_columns("approval_records")
         }
         tables = set(inspect(connection).get_table_names())
-    status = database.healthcheck()
-    database.dispose()
+    status = await database.healthcheck()
+    await database.dispose()
 
     assert "alembic_version" in tables
     assert "tool_call_id" in columns
@@ -426,9 +538,9 @@ async def test_run_migrations_upgrades_legacy_database_with_empty_alembic_versio
     )
 
     database = BusinessDatabase(database_url)
-    with database.engine.begin() as connection:
+    with database.sync_engine.begin() as connection:
         connection.exec_driver_sql("DELETE FROM alembic_version")
-    database.dispose()
+    await database.dispose()
 
     await run_migrations(
         AppSettings(
@@ -440,14 +552,14 @@ async def test_run_migrations_upgrades_legacy_database_with_empty_alembic_versio
     )
 
     database = BusinessDatabase(database_url)
-    with database.engine.connect() as connection:
+    with database.sync_engine.connect() as connection:
         columns = {
             column["name"]
             for column in inspect(connection).get_columns("approval_records")
         }
         version_rows = list(connection.exec_driver_sql("SELECT version_num FROM alembic_version"))
-    status = database.healthcheck()
-    database.dispose()
+    status = await database.healthcheck()
+    await database.dispose()
 
     assert "tool_call_id" in columns
     assert version_rows == [("20260423_000002",)]

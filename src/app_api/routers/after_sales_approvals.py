@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from agent_service.contracts.models import ActorContext
-from agent_service.conversation.service import ConversationConflictError
 from app_api.deps import get_after_sales_assistant_service, require_api_key
 from app_api.schemas.actions import ActionRequest
 from app_api.schemas.runs import RunResponse
+from app_api.services.after_sales_assistant import AfterSalesAssistantService
 
 router = APIRouter(prefix="/api/after-sales", tags=["after-sales-approvals"])
 
@@ -14,7 +16,9 @@ router = APIRouter(prefix="/api/after-sales", tags=["after-sales-approvals"])
 @router.post("/actions", response_model=RunResponse)
 async def submit_action(
     payload: ActionRequest,
-    assistant_service=Depends(get_after_sales_assistant_service),
+    assistant_service: Annotated[
+        AfterSalesAssistantService, Depends(get_after_sales_assistant_service)
+    ],
     _: None = Depends(require_api_key),
 ) -> RunResponse:
     try:
@@ -26,8 +30,6 @@ async def submit_action(
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ConversationConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return RunResponse.model_validate(result.model_dump(mode="json"))

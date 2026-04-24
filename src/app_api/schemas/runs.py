@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from agent_service.contracts.models import AgentError, AgentPendingAction, RunStatus
+
 
 class CreateRunRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
@@ -15,7 +17,7 @@ class CreateRunRequest(BaseModel):
 class RunResponse(BaseModel):
     run_id: str
     session_id: str
-    status: str
+    status: RunStatus
     output: str | None = None
-    pending_action: dict[str, Any] | None = None
-    error: dict[str, Any] | None = None
+    pending_action: AgentPendingAction | None = None
+    error: AgentError | None = None

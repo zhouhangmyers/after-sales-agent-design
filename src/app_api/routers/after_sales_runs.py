@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
@@ -16,9 +17,9 @@ from agent_service.contracts.events import (
     RunStartedEvent,
 )
 from agent_service.contracts.models import ActorContext
-from agent_service.conversation.service import ConversationConflictError
 from app_api.deps import get_after_sales_assistant_service, require_api_key
 from app_api.schemas.runs import CreateRunRequest, RunResponse
+from app_api.services.after_sales_assistant import AfterSalesAssistantService
 
 router = APIRouter(prefix="/api/after-sales", tags=["after-sales-runs"])
 
@@ -30,7 +31,15 @@ def _encode_sse(event: str, payload: dict[str, object]) -> dict[str, str]:
     }
 
 
-def _run_response_payload(*, run_id: str, session_id: str, status: str, output: str | None, pending_action, error) -> dict[str, object]:
+def _run_response_payload(
+    *,
+    run_id: str,
+    session_id: str,
+    status: str,
+    output: str | None,
+    pending_action: Any,
+    error: Any,
+) -> dict[str, object]:
     return {
         "run_id": run_id,
         "session_id": session_id,
@@ -41,7 +50,7 @@ def _run_response_payload(*, run_id: str, session_id: str, status: str, output: 
     }
 
 
-def _map_event(event) -> dict[str, str]:
+def _map_event(event: object) -> dict[str, str]:
     if isinstance(event, RunStartedEvent):
         return _encode_sse(
             "run.started",
@@ -120,17 +129,16 @@ async def _sse_stream(stream: AsyncIterator[object]) -> AsyncIterator[dict[str, 
 @router.post("/runs", response_model=RunResponse)
 async def create_run(
     payload: CreateRunRequest,
-    assistant_service=Depends(get_after_sales_assistant_service),
+    assistant_service: Annotated[
+        AfterSalesAssistantService, Depends(get_after_sales_assistant_service)
+    ],
     _: None = Depends(require_api_key),
 ) -> RunResponse:
-    try:
-        result = await assistant_service.run(
-            message=payload.message,
-            session_id=payload.session_id,
-            actor=ActorContext(actor_id=payload.actor_id, metadata=payload.actor_metadata),
-        )
-    except ConversationConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    result = await assistant_service.run(
+        message=payload.message,
+        session_id=payload.session_id,
+        actor=ActorContext(actor_id=payload.actor_id, metadata=payload.actor_metadata),
+    )
     return RunResponse.model_validate(
         _run_response_payload(
             run_id=result.run_id,
@@ -146,9 +154,11 @@ async def create_run(
 @router.post("/runs/stream")
 async def stream_run(
     payload: CreateRunRequest,
-    assistant_service=Depends(get_after_sales_assistant_service),
+    assistant_service: Annotated[
+        AfterSalesAssistantService, Depends(get_after_sales_assistant_service)
+    ],
     _: None = Depends(require_api_key),
-):
+) -> EventSourceResponse:
     stream = assistant_service.stream(
         message=payload.message,
         session_id=payload.session_id,
@@ -160,7 +170,9 @@ async def stream_run(
 @router.get("/runs/{run_id}", response_model=RunResponse)
 async def get_run_state(
     run_id: str,
-    assistant_service=Depends(get_after_sales_assistant_service),
+    assistant_service: Annotated[
+        AfterSalesAssistantService, Depends(get_after_sales_assistant_service)
+    ],
     _: None = Depends(require_api_key),
 ) -> RunResponse:
     try:
@@ -174,6 +186,6 @@ async def get_run_state(
             status=state.status,
             output=state.output,
             pending_action=state.pending_action,
-            error=None,
+            error=state.error,
         )
     )

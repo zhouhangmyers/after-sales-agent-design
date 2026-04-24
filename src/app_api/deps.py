@@ -1,23 +1,24 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import Depends, Header, HTTPException, Request
 
+from agent_service.contracts.registry import AgentRegistry
 from app_api.container import AppContainer
-from business_service.after_sales.application.services.assistant_service import (
+from app_api.services.after_sales_assistant import (
     AfterSalesAssistantService,
 )
-from business_service.after_sales.infrastructure.persistence.sqlalchemy.repositories import (
-    SqlAlchemyAfterSalesRepository,
+from business_service.after_sales.application.services.after_sales_service import (
+    AfterSalesService,
 )
 
 
-def get_container(request: Request) -> AppContainer:
-    return request.app.state.container
+async def get_container(request: Request) -> AppContainer:
+    return cast(AppContainer, request.app.state.container)
 
 
-def require_api_key(
+async def require_api_key(
     request: Request,
     x_api_key: str | None = Header(default=None),
 ) -> None:
@@ -28,13 +29,13 @@ def require_api_key(
         raise HTTPException(status_code=401, detail="invalid api key")
 
 
-def get_after_sales_repository(
+async def get_after_sales_service(
     container: Annotated[AppContainer, Depends(get_container)],
-) -> SqlAlchemyAfterSalesRepository:
-    return container.after_sales_repository
+) -> AfterSalesService:
+    return container.after_sales_service
 
 
-def get_after_sales_assistant_service(
+async def get_after_sales_assistant_service(
     container: Annotated[AppContainer, Depends(get_container)],
 ) -> AfterSalesAssistantService:
     assistant_service = container.after_sales_assistant_service
@@ -45,3 +46,9 @@ def get_after_sales_assistant_service(
             detail=f"assistant service unavailable: {detail}",
         )
     return assistant_service
+
+
+async def get_agent_registry(
+    container: Annotated[AppContainer, Depends(get_container)],
+) -> AgentRegistry:
+    return container.agent_registry

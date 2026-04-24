@@ -35,3 +35,39 @@ def test_settings_config_warnings_detect_close_match_typo(monkeypatch: pytest.Mo
     warnings = AppSettings(app_env="test").config_warnings()
 
     assert "unknown config key `AUTO_REATE_SCHEMA`; did you mean `AUTO_CREATE_SCHEMA`?" in warnings
+
+
+def test_settings_parse_mcp_servers_from_json_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "MCP_SERVERS",
+        """
+        {
+          "weather": {"transport": "http", "url": "http://localhost:8000/mcp"},
+          "math": {"transport": "stdio", "command": "python", "args": ["./math_server.py"]}
+        }
+        """,
+    )
+
+    settings = AppSettings(app_env="test")
+
+    assert settings.mcp_servers["weather"].transport == "http"
+    assert settings.mcp_servers["weather"].url == "http://localhost:8000/mcp"
+    assert settings.mcp_servers["math"].transport == "stdio"
+    assert settings.mcp_servers["math"].command == "python"
+    assert settings.mcp_servers["math"].args == ["./math_server.py"]
+
+
+def test_settings_reject_invalid_mcp_http_config() -> None:
+    with pytest.raises(ValueError, match="requires `url`"):
+        AppSettings(
+            app_env="test",
+            mcp_servers={"weather": {"transport": "http"}},
+        )
+
+
+def test_settings_reject_invalid_mcp_stdio_config() -> None:
+    with pytest.raises(ValueError, match="requires `command`"):
+        AppSettings(
+            app_env="test",
+            mcp_servers={"math": {"transport": "stdio"}},
+        )

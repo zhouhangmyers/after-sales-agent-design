@@ -1,27 +1,37 @@
 from __future__ import annotations
 
-from agent_service.infrastructure.actions.dispatcher import LangChainActionDispatcher
+from contextlib import AbstractAsyncContextManager
+from dataclasses import replace
+
+from langchain_core.language_models.chat_models import BaseChatModel
+
+from agent_service.contracts.actions import ToolSpec
+from agent_service.contracts.capability import AgentDefinition
+from agent_service.contracts.registry import AgentRegistry
+from agent_service.infrastructure.mcp import MCPToolProvider
+from agent_service.infrastructure.runtime.langchain_runtime import LangChainAgentRuntime
 from agent_service.infrastructure.state_store.in_memory_store import InMemoryStateStore
 from agent_service.infrastructure.state_store.langgraph_postgres_store import (
     LangGraphPostgresStateStore,
 )
-from agent_service.infrastructure.workflow.workflow_engine import WorkflowEngine
-from agent_service.llm.bound_client import build_chat_client
-from agent_service.llm.types import ChatClient
+from agent_service.llm.factory import build_chat_model
 from app_api.container import AppContainer, DependencyStatus, RuntimeStateStore
 from app_api.migrations import upgrade_business_database
+from app_api.services.after_sales_agent_definition import (
+    build_after_sales_agent_definition,
+)
+from app_api.services.after_sales_assistant import AfterSalesAssistantService
+from app_api.services.after_sales_run_projector import AfterSalesRunProjector
 from app_api.settings import AppSettings
-from business_service.after_sales.application.capability.capability import (
-    build_capability,
-)
-from business_service.after_sales.application.services.assistant_service import (
-    AfterSalesAssistantService,
-)
-from business_service.after_sales.infrastructure.persistence.sqlalchemy.repositories import (
-    SqlAlchemyAfterSalesRepository,
+from business_service.after_sales.application.ports import AfterSalesUnitOfWork
+from business_service.after_sales.application.services.after_sales_service import (
+    AfterSalesService,
 )
 from business_service.after_sales.infrastructure.persistence.sqlalchemy.session import (
     BusinessDatabase,
+)
+from business_service.after_sales.infrastructure.persistence.sqlalchemy.unit_of_work import (
+    SqlAlchemyAfterSalesUnitOfWork,
 )
 
 
@@ -39,13 +49,13 @@ def build_runtime_state_store(
 def build_llm_dependency(
     settings: AppSettings,
     *,
-    chat_client_override: ChatClient | None = None,
-) -> tuple[ChatClient | None, DependencyStatus]:
-    if chat_client_override is not None:
-        return chat_client_override, DependencyStatus(ok=True)
+    chat_model_override: BaseChatModel | None = None,
+) -> tuple[BaseChatModel | None, DependencyStatus]:
+    if chat_model_override is not None:
+        return chat_model_override, DependencyStatus(ok=True)
     try:
         return (
-            build_chat_client(
+            build_chat_model(
                 llm_provider=settings.llm_provider,
                 llm_model=settings.llm_model,
                 llm_timeout_seconds=settings.llm_timeout_seconds,
@@ -53,6 +63,11 @@ def build_llm_dependency(
                 deepseek_api_key=(
                     settings.deepseek_api_key.get_secret_value()
                     if settings.deepseek_api_key is not None
+                    else None
+                ),
+                openai_api_key=(
+                    settings.openai_api_key.get_secret_value()
+                    if settings.openai_api_key is not None
                     else None
                 ),
             ),
@@ -65,10 +80,37 @@ def build_llm_dependency(
         )
 
 
-def build_container(
+async def load_mcp_tools(settings: AppSettings) -> tuple[tuple[ToolSpec, ...], DependencyStatus]:
+    if not settings.mcp_servers:
+        return (), DependencyStatus(ok=True)
+
+    server_configs = {
+        name: config.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+        for name, config in settings.mcp_servers.items()
+    }
+    try:
+        tools = await MCPToolProvider(server_configs).load_tools()
+    except Exception as exc:
+        return (), DependencyStatus(
+            ok=False,
+            detail=str(exc) or exc.__class__.__name__,
+        )
+    return tools, DependencyStatus(ok=True)
+
+
+def _definition_with_extra_tools(
+    definition: AgentDefinition,
+    extra_tools: tuple[ToolSpec, ...],
+) -> AgentDefinition:
+    if not extra_tools:
+        return definition
+    return replace(definition, tools=(*definition.tools, *extra_tools))
+
+
+async def build_container(
     settings: AppSettings,
     *,
-    chat_client_override: ChatClient | None = None,
+    chat_model_override: BaseChatModel | None = None,
     runtime_state_store_override: RuntimeStateStore | None = None,
 ) -> AppContainer:
     if settings.auto_create_schema:
@@ -79,34 +121,50 @@ def build_container(
         runtime_state_store_override,
     )
     business_database = BusinessDatabase(settings.business_database_url)
-    repository = SqlAlchemyAfterSalesRepository(business_database.managed_session)
-    chat_client, llm_status = build_llm_dependency(
+
+    def unit_of_work_factory() -> AbstractAsyncContextManager[AfterSalesUnitOfWork]:
+        return SqlAlchemyAfterSalesUnitOfWork(business_database.managed_session)
+
+    after_sales_service = AfterSalesService(
+        unit_of_work_factory=unit_of_work_factory,
+    )
+    mcp_tools, mcp_status = await load_mcp_tools(settings)
+
+    agent_registry = AgentRegistry()
+    after_sales_definition = _definition_with_extra_tools(
+        build_after_sales_agent_definition(
+            after_sales_service=after_sales_service,
+        ),
+        mcp_tools,
+    )
+    agent_registry.register(after_sales_definition)
+
+    chat_model, llm_status = build_llm_dependency(
         settings,
-        chat_client_override=chat_client_override,
+        chat_model_override=chat_model_override,
     )
     assistant_service: AfterSalesAssistantService | None = None
-    if chat_client is not None:
-        capability = build_capability(repository=repository)
-        workflow_engine = WorkflowEngine(
-            chat_client=chat_client,
-            action_dispatcher=LangChainActionDispatcher(),
+    if chat_model is not None:
+        runtime = LangChainAgentRuntime(
+            model=chat_model,
             state_store=runtime_state_store,
-            llm_timeout_seconds=settings.llm_timeout_seconds,
-            llm_max_retries=settings.llm_max_retries,
             max_steps=settings.max_steps,
-            approval_timeout_seconds=settings.approval_timeout_seconds,
         )
         assistant_service = AfterSalesAssistantService(
-            workflow_engine=workflow_engine,
-            capability=capability,
-            repository=repository,
+            runtime=runtime,
+            definition=after_sales_definition,
+            projector=AfterSalesRunProjector(
+                unit_of_work_factory=unit_of_work_factory,
+            ),
         )
     container = AppContainer(
         settings=settings,
         business_database=business_database,
         runtime_state_store=runtime_state_store,
-        after_sales_repository=repository,
+        after_sales_service=after_sales_service,
         after_sales_assistant_service=assistant_service,
+        agent_registry=agent_registry,
         llm_status=llm_status,
+        mcp_status=mcp_status,
     )
     return container

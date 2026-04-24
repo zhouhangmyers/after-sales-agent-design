@@ -41,5 +41,5 @@ class InMemoryStateStore:
             messages=messages,
         )
 
-    def close(self) -> None:
+    async def close(self) -> None:
         return None

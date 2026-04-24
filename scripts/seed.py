@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -31,9 +32,9 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def seed() -> None:
+async def seed() -> None:
     business_database = BusinessDatabase(DATABASE_URL)
-    business_database.create_schema()
+    await business_database.create_schema()
 
     now = utcnow()
 
@@ -197,7 +198,7 @@ def seed() -> None:
         ),
     ]
 
-    with business_database.managed_session() as session:
+    async with business_database.managed_session() as session:
         for model in [
             AuditLog,
             ApprovalRecord,
@@ -209,17 +210,17 @@ def seed() -> None:
             PolicyArticle,
             Customer,
         ]:
-            session.execute(delete(model))
+            await session.execute(delete(model))
 
         session.add_all(customers)
         session.add_all(orders)
         session.add_all(shipments)
         session.add_all(policy_articles)
-        session.commit()
+        await session.commit()
 
-    business_database.dispose()
+    await business_database.dispose()
 
 
 if __name__ == "__main__":
-    seed()
+    asyncio.run(seed())
     print("seed completed for after_sales_mvp.db")

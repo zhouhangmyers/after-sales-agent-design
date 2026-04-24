@@ -15,4 +15,4 @@ async def run_migrations(settings: AppSettings | None = None) -> None:
         upgrade_business_database(database_url=resolved_settings.business_database_url)
         await runtime_state_store.ensure_initialized()
     finally:
-        runtime_state_store.close()
+        await runtime_state_store.close()

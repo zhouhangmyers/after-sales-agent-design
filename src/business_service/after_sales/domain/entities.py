@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+type ApprovalRiskLevel = Literal["low", "medium", "high"]
+
 
 class DomainModel(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -76,6 +78,12 @@ class RefundRequestRead(DomainModel):
     requires_approval: bool
     created_at: datetime
     updated_at: datetime
+
+
+class RefundApprovalRequirement(BaseModel):
+    reason: str
+    risk_level: ApprovalRiskLevel = "low"
+    display_payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class PolicyArticleRead(DomainModel):
