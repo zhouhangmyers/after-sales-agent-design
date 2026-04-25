@@ -59,19 +59,19 @@ class BusinessDatabase:
             {"check_same_thread": False} if _is_sqlite(sync_database_url) else {}
         )
         self.sync_engine: Engine = create_engine(
-            sync_database_url,
-            future=True,
-            connect_args=sync_connect_args,
+            sync_database_url,  # 同步数据库 URL，供 Alembic、inspect 和 run_sync 场景使用。
+            future=True,  # 使用 SQLAlchemy 2.x 风格 API，避免旧版隐式行为。
+            connect_args=sync_connect_args,  # SQLite 关闭同线程限制，解决测试/本地同步检查时的线程约束。
         )
         self.async_engine: AsyncEngine = create_async_engine(
-            async_database_url,
-            future=True,
+            async_database_url,  # 异步数据库 URL，供 FastAPI 请求和 AsyncSession 使用。
+            future=True,  # 保持 async engine 与 sync engine 的 SQLAlchemy 2.x 行为一致。
         )
         self._session_factory = async_sessionmaker(
-            bind=self.async_engine,
-            class_=AsyncSession,
-            autoflush=False,
-            expire_on_commit=False,
+            bind=self.async_engine,  # 所有业务 session 都从同一个异步 engine 获取连接。
+            class_=AsyncSession,  # 明确创建异步 session，解决 async route 里不能用同步 session 的问题。
+            autoflush=False,  # 避免查询前自动 flush 半成品对象，事务边界交给 service/UoW 控制。
+            expire_on_commit=False,  # commit 后对象字段仍可读取，避免返回响应时触发额外懒加载。
         )
 
     async def create_schema(self) -> None:
