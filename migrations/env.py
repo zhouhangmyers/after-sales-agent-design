@@ -6,10 +6,10 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from business_service.after_sales.infrastructure.persistence.sqlalchemy import (
+from after_sales.infrastructure.persistence.sqlalchemy import (
     models as _after_sales_models,
 )
-from business_service.after_sales.infrastructure.persistence.sqlalchemy.session import Base
+from after_sales.infrastructure.persistence.sqlalchemy.session import Base
 
 _ = _after_sales_models
 

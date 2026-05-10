@@ -7,8 +7,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from app_api.bootstrap import build_container
-from app_api.container import RuntimeStateStore
+from app_api.composition.bootstrap import build_container
+from app_api.composition.container import RuntimeStateStore
 from app_api.routers.after_sales_approvals import router as after_sales_approvals_router
 from app_api.routers.after_sales_resources import router as after_sales_resources_router
 from app_api.routers.after_sales_runs import router as after_sales_runs_router

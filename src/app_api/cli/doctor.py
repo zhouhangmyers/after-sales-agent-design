@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from app_api.bootstrap import (
+from after_sales.infrastructure.persistence.sqlalchemy.session import (
+    BusinessDatabase,
+)
+from app_api.composition.bootstrap import (
     build_llm_dependency,
     build_runtime_state_store,
     load_mcp_tools,
 )
 from app_api.settings import AppSettings
-from business_service.after_sales.infrastructure.persistence.sqlalchemy.session import (
-    BusinessDatabase,
-)
 
 
 async def doctor(settings: AppSettings | None = None) -> dict[str, object]:

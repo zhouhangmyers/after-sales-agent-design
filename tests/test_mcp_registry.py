@@ -10,13 +10,15 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
 
-from agent_service.contracts.capability import AgentDefinition
-from agent_service.contracts.events import RunCompletedEvent, RunEvent
-from agent_service.contracts.models import ActorContext, AgentRunResult
-from agent_service.infrastructure.mcp import MCPToolProvider
-from agent_service.infrastructure.runtime.langchain_runtime import LangChainAgentRuntime
-from agent_service.infrastructure.state_store.in_memory_store import InMemoryStateStore
-from app_api.settings import AppSettings
+from agent_core.contracts.agent_definition import AgentDefinition
+from agent_core.contracts.run_events import RunCompletedEvent, RunEvent
+from agent_core.contracts.run_state import ActorContext, AgentRunResult
+from agent_integrations.mcp import MCPToolProvider
+from agent_runtime.langchain.checkpoint.local_memory import (
+    InMemoryStateStore,
+)
+from agent_runtime.langchain.runtime import LangChainAgentRuntime
+from app_api.settings import AppSettings, MCPServerConfig
 from tests.fake_chat_models import DeterministicToolCallingChatModel
 
 
@@ -48,7 +50,7 @@ def install_fake_mcp_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
                 )
             ]
 
-    client_module.MultiServerMCPClient = FakeMultiServerMCPClient
+    client_module.__dict__["MultiServerMCPClient"] = FakeMultiServerMCPClient
     monkeypatch.setitem(sys.modules, "langchain_mcp_adapters", package)
     monkeypatch.setitem(sys.modules, "langchain_mcp_adapters.client", client_module)
 
@@ -97,10 +99,10 @@ async def test_mcp_tool_provider_namespaces_loaded_tools(
     settings = AppSettings(
         app_env="test",
         mcp_servers={
-            "weather": {
-                "transport": "http",
-                "url": "http://localhost:8000/mcp",
-            }
+            "weather": MCPServerConfig(
+                transport="http",
+                url="http://localhost:8000/mcp",
+            )
         },
     )
 

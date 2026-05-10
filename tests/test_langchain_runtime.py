@@ -8,17 +8,23 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, Too
 from langchain_core.outputs import ChatGenerationChunk
 from pydantic import BaseModel
 
-from agent_service.contracts.actions import (
+from agent_core.contracts.agent_definition import AgentDefinition
+from agent_core.contracts.run_events import (
+    OutputDeltaEvent,
+    RunCompletedEvent,
+    RunEvent,
+)
+from agent_core.contracts.run_state import ActorContext, AgentRunResult
+from agent_core.contracts.tool_spec import (
     ApprovalRequirement,
     CallableApprovalPolicy,
     ToolContext,
     ToolSpec,
 )
-from agent_service.contracts.capability import AgentDefinition
-from agent_service.contracts.events import OutputDeltaEvent, RunCompletedEvent, RunEvent
-from agent_service.contracts.models import ActorContext, AgentRunResult
-from agent_service.infrastructure.runtime.langchain_runtime import LangChainAgentRuntime
-from agent_service.infrastructure.state_store.in_memory_store import InMemoryStateStore
+from agent_runtime.langchain.checkpoint.local_memory import (
+    InMemoryStateStore,
+)
+from agent_runtime.langchain.runtime import LangChainAgentRuntime
 from tests.fake_chat_models import DeterministicToolCallingChatModel
 
 

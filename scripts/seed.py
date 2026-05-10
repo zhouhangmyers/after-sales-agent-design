@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from sqlalchemy import delete
 
-from business_service.after_sales.infrastructure.persistence.sqlalchemy.models import (
+from after_sales.infrastructure.persistence.sqlalchemy.models import (
     ApprovalRecord,
     AuditLog,
     Customer,
@@ -18,7 +18,7 @@ from business_service.after_sales.infrastructure.persistence.sqlalchemy.models i
     Ticket,
     ToolCallLog,
 )
-from business_service.after_sales.infrastructure.persistence.sqlalchemy.session import (
+from after_sales.infrastructure.persistence.sqlalchemy.session import (
     BusinessDatabase,
 )
 

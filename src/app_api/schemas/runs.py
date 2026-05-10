@@ -4,7 +4,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from agent_service.contracts.models import AgentError, AgentPendingAction, RunStatus
+from agent_core.contracts.run_state import (
+    AgentError,
+    AgentPendingAction,
+    RunStatus,
+)
 
 
 class CreateRunRequest(BaseModel):

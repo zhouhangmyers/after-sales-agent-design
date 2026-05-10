@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
-from app_api.container import AppContainer
+from app_api.composition.container import AppContainer
 from app_api.deps import get_container
 
 router = APIRouter(tags=["health"])

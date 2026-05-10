@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app_api.bootstrap import build_runtime_state_store
+from app_api.composition.bootstrap import build_runtime_state_store
 from app_api.migrations import upgrade_business_database
 from app_api.settings import AppSettings
 

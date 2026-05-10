@@ -6,10 +6,10 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
-from business_service.after_sales.infrastructure.persistence.sqlalchemy import (
+from after_sales.infrastructure.persistence.sqlalchemy import (
     models as _after_sales_models,
 )
-from business_service.after_sales.infrastructure.persistence.sqlalchemy.session import (
+from after_sales.infrastructure.persistence.sqlalchemy.session import (
     Base,
 )
 

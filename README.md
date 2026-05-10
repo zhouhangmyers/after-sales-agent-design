@@ -18,33 +18,39 @@
 src/
   app_api/
     main.py
-    bootstrap.py
+    composition/
+    projectors/
     routers/
-    services/
-  business_service/
-    after_sales/
-      application/ports.py
-      application/services/
-      domain/
-      infrastructure/
-  agent_service/
+    schemas/
+    use_cases/
+  after_sales/
+    application/ports.py
+    application/services/
+    domain/
+    infrastructure/
+  agent_core/
     contracts/
-    infrastructure/runtime/
-    infrastructure/state_store/
+    support/
+  agent_runtime/
+    langchain/
+  agent_integrations/
     llm/
+    mcp/
 docs/
   ARCHITECTURE.md
 ```
 
 ## 为什么这样拆
 
-- `app_api` 只做 composition root、HTTP schema、路由和投影适配。
-- `business_service.after_sales` 只关心订单、物流、退款、审批规则和数据库，不依赖 `agent_service`。
-- `business_service.after_sales` 的写入用例通过 Unit of Work 显式 `commit`，异常路径自动 rollback。
+- `app_api` 只做 HTTP schema、路由、composition root、应用用例和投影适配。
+- `after_sales` 只关心订单、物流、退款、审批规则和数据库，不依赖 Agent/API 层。
+- `after_sales` 的写入用例通过 Unit of Work 显式 `commit`，异常路径自动 rollback。
 - HTTP 路由到 business repository 是全链路 async，业务数据库使用 SQLAlchemy `AsyncSession`。
-- `agent_service` 只关心 LangChain/LangGraph 主链、API 事件模型、窄版 tool spec、provider factory、checkpoint 与 session transcript；不建设框架无关 Agent runtime。
+- `agent_core` 只放框架无关契约：`AgentDefinition`、`ToolSpec`、`RunEvent`、`RunState`。
+- `agent_runtime` 只放执行实现；当前主实现是 `agent_runtime/langchain`。
+- `agent_integrations` 收拢外部 SDK / 协议接入，包括 LLM factory 和 MCP tool provider。
 - 售后业务、本地 tool catalog 和可选 MCP tools 在 `app_api` composition 层相遇。
-- 运行事件到 tool log、approval、audit log 的投影集中在 `app_api.services.after_sales_run_projector`。
+- 运行事件到 tool log、approval、audit log 的投影集中在 `app_api.projectors.after_sales_run_projector`。
 - `RunEvent` 只作为 API/SSE 输出模型；`RunState` 只作为 LangGraph checkpoint 派生查询视图。
 - 当前不自建 observability 抽象；生产观测优先接 FastAPI middleware、structured logging、LangSmith 或 OpenTelemetry。LangSmith 适合 trace、monitoring 和 eval，不替代业务数据库事务边界。
 
@@ -121,7 +127,7 @@ MCP_SERVERS={}
 ```bash
 uv run pytest -q
 uv run ruff check src tests scripts
-uv run mypy src
+uv run mypy src tests
 ```
 
 当前仓库要求三项全部通过。
@@ -131,11 +137,11 @@ uv run mypy src
 先读：
 
 1. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-2. [src/app_api/bootstrap.py](src/app_api/bootstrap.py)
-3. [src/business_service/after_sales/application/services/after_sales_service.py](src/business_service/after_sales/application/services/after_sales_service.py)
-4. [src/app_api/services/after_sales_agent_definition.py](src/app_api/services/after_sales_agent_definition.py)
-5. [src/agent_service/infrastructure/runtime/langchain_runtime.py](src/agent_service/infrastructure/runtime/langchain_runtime.py)
-6. [src/agent_service/infrastructure/state_store/langgraph_postgres_store.py](src/agent_service/infrastructure/state_store/langgraph_postgres_store.py)
+2. [src/app_api/composition/bootstrap.py](src/app_api/composition/bootstrap.py)
+3. [src/after_sales/application/services/after_sales_service.py](src/after_sales/application/services/after_sales_service.py)
+4. [src/app_api/composition/after_sales_agent_factory.py](src/app_api/composition/after_sales_agent_factory.py)
+5. [src/agent_runtime/langchain/runtime.py](src/agent_runtime/langchain/runtime.py)
+6. [src/agent_runtime/langchain/checkpoint/langgraph_postgres.py](src/agent_runtime/langchain/checkpoint/langgraph_postgres.py)
 
 ## 官方参考
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app_api.settings import AppSettings
+from app_api.settings import AppSettings, MCPServerConfig
 
 
 def test_test_env_allows_missing_runtime_database_url() -> None:
@@ -61,7 +61,7 @@ def test_settings_reject_invalid_mcp_http_config() -> None:
     with pytest.raises(ValueError, match="requires `url`"):
         AppSettings(
             app_env="test",
-            mcp_servers={"weather": {"transport": "http"}},
+            mcp_servers={"weather": MCPServerConfig(transport="http")},
         )
 
 
@@ -69,5 +69,5 @@ def test_settings_reject_invalid_mcp_stdio_config() -> None:
     with pytest.raises(ValueError, match="requires `command`"):
         AppSettings(
             app_env="test",
-            mcp_servers={"math": {"transport": "stdio"}},
+            mcp_servers={"math": MCPServerConfig(transport="stdio")},
         )

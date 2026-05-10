@@ -7,7 +7,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
-from agent_service.contracts.events import (
+from agent_core.contracts.run_events import (
     ActionCompletedEvent,
     ActionRequiredEvent,
     ActionStartedEvent,
@@ -16,10 +16,10 @@ from agent_service.contracts.events import (
     RunFailedEvent,
     RunStartedEvent,
 )
-from agent_service.contracts.models import ActorContext
-from app_api.deps import get_after_sales_assistant_service, require_api_key
+from agent_core.contracts.run_state import ActorContext
+from app_api.deps import get_after_sales_agent_use_case, require_api_key
 from app_api.schemas.runs import CreateRunRequest, RunResponse
-from app_api.services.after_sales_assistant import AfterSalesAssistantService
+from app_api.use_cases.after_sales_agent_use_case import AfterSalesAgentUseCase
 
 router = APIRouter(prefix="/api/after-sales", tags=["after-sales-runs"])
 
@@ -129,12 +129,12 @@ async def _sse_stream(stream: AsyncIterator[object]) -> AsyncIterator[dict[str, 
 @router.post("/runs", response_model=RunResponse)
 async def create_run(
     payload: CreateRunRequest,
-    assistant_service: Annotated[
-        AfterSalesAssistantService, Depends(get_after_sales_assistant_service)
+    agent_use_case: Annotated[
+        AfterSalesAgentUseCase, Depends(get_after_sales_agent_use_case)
     ],
     _: None = Depends(require_api_key),
 ) -> RunResponse:
-    result = await assistant_service.run(
+    result = await agent_use_case.run(
         message=payload.message,
         session_id=payload.session_id,
         actor=ActorContext(actor_id=payload.actor_id, metadata=payload.actor_metadata),
@@ -154,12 +154,12 @@ async def create_run(
 @router.post("/runs/stream")
 async def stream_run(
     payload: CreateRunRequest,
-    assistant_service: Annotated[
-        AfterSalesAssistantService, Depends(get_after_sales_assistant_service)
+    agent_use_case: Annotated[
+        AfterSalesAgentUseCase, Depends(get_after_sales_agent_use_case)
     ],
     _: None = Depends(require_api_key),
 ) -> EventSourceResponse:
-    stream = assistant_service.stream(
+    stream = agent_use_case.stream(
         message=payload.message,
         session_id=payload.session_id,
         actor=ActorContext(actor_id=payload.actor_id, metadata=payload.actor_metadata),
@@ -170,13 +170,13 @@ async def stream_run(
 @router.get("/runs/{run_id}", response_model=RunResponse)
 async def get_run_state(
     run_id: str,
-    assistant_service: Annotated[
-        AfterSalesAssistantService, Depends(get_after_sales_assistant_service)
+    agent_use_case: Annotated[
+        AfterSalesAgentUseCase, Depends(get_after_sales_agent_use_case)
     ],
     _: None = Depends(require_api_key),
 ) -> RunResponse:
     try:
-        state = await assistant_service.get_state(run_id=run_id)
+        state = await agent_use_case.get_state(run_id=run_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return RunResponse.model_validate(

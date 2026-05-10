@@ -8,22 +8,22 @@ import httpx
 import pytest
 from sqlalchemy import inspect, select
 
-from app_api.cli.migrate import run_migrations
-from app_api.migrations import upgrade_business_database
-from app_api.settings import AppSettings
-from business_service.after_sales.domain.entities import TicketCreate
-from business_service.after_sales.infrastructure.persistence.sqlalchemy.models import (
+from after_sales.domain.entities import TicketCreate
+from after_sales.infrastructure.persistence.sqlalchemy.models import (
     ApprovalRecord,
     RefundRequest,
     Ticket,
     ToolCallLog,
 )
-from business_service.after_sales.infrastructure.persistence.sqlalchemy.session import (
+from after_sales.infrastructure.persistence.sqlalchemy.session import (
     BusinessDatabase,
 )
-from business_service.after_sales.infrastructure.persistence.sqlalchemy.unit_of_work import (
+from after_sales.infrastructure.persistence.sqlalchemy.unit_of_work import (
     SqlAlchemyAfterSalesUnitOfWork,
 )
+from app_api.cli.migrate import run_migrations
+from app_api.migrations import upgrade_business_database
+from app_api.settings import AppSettings, MCPServerConfig
 from tests.integration.helpers import (
     build_after_sales_app,
     build_health_only_app,
@@ -148,17 +148,17 @@ async def test_mcp_load_failure_degrades_health_but_local_agent_still_runs(
         async def get_tools(self) -> list[object]:
             raise RuntimeError("mcp server unavailable")
 
-    client_module.MultiServerMCPClient = FailingMultiServerMCPClient
+    client_module.__dict__["MultiServerMCPClient"] = FailingMultiServerMCPClient
     monkeypatch.setitem(sys.modules, "langchain_mcp_adapters", package)
     monkeypatch.setitem(sys.modules, "langchain_mcp_adapters.client", client_module)
 
     app = await build_after_sales_app(
         tmp_path / "after-sales-mcp-failure.db",
         mcp_servers={
-            "weather": {
-                "transport": "http",
-                "url": "http://localhost:8000/mcp",
-            }
+            "weather": MCPServerConfig(
+                transport="http",
+                url="http://localhost:8000/mcp",
+            )
         },
     )
 
@@ -229,6 +229,7 @@ async def test_refund_stream_action_and_audit_projection(tmp_path: Path) -> None
                 },
             )
             run_id = first_events[0][1]["run_id"]
+            assert isinstance(run_id, str)
 
             state_response = await client.get(f"/api/after-sales/runs/{run_id}")
             action_response = await client.post(
@@ -253,7 +254,7 @@ async def test_refund_stream_action_and_audit_projection(tmp_path: Path) -> None
         "action.required",
         "run.completed",
     ]
-    assert first_events[0][1]["run_id"].startswith("run-")
+    assert run_id.startswith("run-")
     assert first_events[0][1]["session_id"] == "refund-run-1"
     assert first_events[1][1]["pending_action"] == {
         "action_id": "call_submit_refund_request",
@@ -351,6 +352,7 @@ async def test_invalid_action_id_does_not_resolve_approval(tmp_path: Path) -> No
                 },
             )
             run_id = events[0][1]["run_id"]
+            assert isinstance(run_id, str)
             action_response = await client.post(
                 "/api/after-sales/actions",
                 json={

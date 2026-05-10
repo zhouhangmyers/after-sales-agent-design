@@ -8,21 +8,22 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from fastapi import FastAPI
 from langchain_core.messages import AIMessage, ToolMessage
 from sse_starlette.sse import AppStatus
 
-from agent_service.llm import text_from_message
-from app_api.main import create_app
-from app_api.settings import AppSettings
-from business_service.after_sales.infrastructure.persistence.sqlalchemy.models import (
+from after_sales.infrastructure.persistence.sqlalchemy.models import (
     Customer,
     Order,
     PolicyArticle,
     Shipment,
 )
-from business_service.after_sales.infrastructure.persistence.sqlalchemy.session import (
+from after_sales.infrastructure.persistence.sqlalchemy.session import (
     BusinessDatabase,
 )
+from agent_core.support import text_from_message
+from app_api.main import create_app
+from app_api.settings import AppSettings, MCPServerConfig
 from tests.fake_chat_models import DeterministicToolCallingChatModel
 
 
@@ -158,8 +159,8 @@ class AfterSalesRoutingChatModel(DeterministicToolCallingChatModel):
 async def build_after_sales_app(
     database_path: Path,
     *,
-    mcp_servers: dict[str, dict[str, object]] | None = None,
-):
+    mcp_servers: dict[str, MCPServerConfig] | None = None,
+) -> FastAPI:
     database_url = f"sqlite+pysqlite:///{database_path}"
     await _seed_business_database(database_url)
     settings = AppSettings(
@@ -176,7 +177,7 @@ async def build_after_sales_app(
     )
 
 
-async def build_health_only_app(database_path: Path):
+async def build_health_only_app(database_path: Path) -> FastAPI:
     database_url = f"sqlite+pysqlite:///{database_path}"
     database = BusinessDatabase(database_url)
     await database.create_schema()

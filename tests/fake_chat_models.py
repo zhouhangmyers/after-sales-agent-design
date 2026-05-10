@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Sequence
 from typing import Any
 
+from langchain_core.callbacks.manager import (
+    AsyncCallbackManagerForLLMRun,
+    CallbackManagerForLLMRun,
+)
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import BaseTool
 from pydantic import PrivateAttr
 
-from agent_service.llm.payloads import dump_payload, text_from_message
+from agent_core.support.json_payload import dump_payload
+from agent_core.support.message_serialization import text_from_message
 
 
 class DeterministicToolCallingChatModel(BaseChatModel):
@@ -22,14 +28,14 @@ class DeterministicToolCallingChatModel(BaseChatModel):
 
     def bind_tools(
         self,
-        tools: list[BaseTool] | tuple[BaseTool, ...],
+        tools: Sequence[dict[str, Any] | type | Callable[..., Any] | BaseTool],
         *,
         tool_choice: str | None = None,
         **kwargs: Any,
     ) -> DeterministicToolCallingChatModel:
         del tool_choice, kwargs
         clone = self.model_copy(deep=True)
-        clone._bound_tools = list(tools)
+        clone._bound_tools = [tool for tool in tools if isinstance(tool, BaseTool)]
         clone._shared_state = self._shared_state
         return clone
 
@@ -37,7 +43,7 @@ class DeterministicToolCallingChatModel(BaseChatModel):
         self,
         messages: list[BaseMessage],
         stop: list[str] | None = None,
-        run_manager=None,
+        run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
         raise NotImplementedError("tests use async execution only")
@@ -46,7 +52,7 @@ class DeterministicToolCallingChatModel(BaseChatModel):
         self,
         messages: list[BaseMessage],
         stop: list[str] | None = None,
-        run_manager=None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
         del stop, run_manager, kwargs

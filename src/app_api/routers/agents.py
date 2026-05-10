@@ -4,9 +4,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from agent_service.contracts.actions import ToolSpec
-from agent_service.contracts.capability import AgentDefinition
-from agent_service.contracts.registry import AgentRegistry
+from agent_core.contracts.agent_definition import AgentDefinition
+from agent_core.contracts.tool_spec import ToolSpec
+from agent_core.registry import AgentRegistry
 from app_api.deps import get_agent_registry, require_api_key
 from app_api.schemas.agents import AgentSummary, AgentToolsResponse, ToolSummary
 
@@ -27,7 +27,10 @@ def _tool_summary(tool: ToolSpec) -> ToolSummary:
         description=tool.description,
         source=tool.source,
         source_id=tool.source_id,
+        # 把工具的 Pydantic 入参模型转成 JSON Schema，供前端/调用方理解参数结构。
         args_schema=tool.args_schema.model_json_schema(),
+        # 这是工具目录的静态标识：有 approval_policy 表示运行时会先评估审批策略；
+        # 具体某次调用是否暂停审批，取决于 approval_policy.evaluate(payload) 是否返回要求。
         requires_approval=tool.approval_policy is not None,
     )
 

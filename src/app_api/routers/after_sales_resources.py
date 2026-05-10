@@ -2,24 +2,21 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app_api.deps import get_after_sales_service, require_api_key
-from business_service.after_sales.application.services.after_sales_service import (
+from after_sales.application.services.after_sales_service import (
     AfterSalesService,
 )
-from business_service.after_sales.domain.entities import (
+from after_sales.domain.entities import (
     AuditLogRead,
     CustomerRead,
-    OrderLookupInput,
     OrderRead,
     PolicyArticleRead,
-    PolicySearchInput,
     RefundRequestCreate,
     RefundRequestRead,
     ShipmentRead,
     TicketCreate,
-    TicketLookupInput,
     TicketRead,
 )
+from app_api.deps import get_after_sales_service, require_api_key
 
 router = APIRouter(prefix="/api/after-sales", tags=["after-sales-resources"])
 
@@ -31,7 +28,7 @@ async def get_order(
     _: None = Depends(require_api_key),
 ) -> OrderRead:
     try:
-        return await service.get_order_detail(OrderLookupInput(order_id=order_id))
+        return await service.get_order_detail(order_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -43,7 +40,7 @@ async def get_shipment(
     _: None = Depends(require_api_key),
 ) -> ShipmentRead:
     try:
-        return await service.get_shipment_detail(OrderLookupInput(order_id=order_id))
+        return await service.get_shipment_detail(order_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -66,7 +63,7 @@ async def search_policies(
     service: AfterSalesService = Depends(get_after_sales_service),
     _: None = Depends(require_api_key),
 ) -> list[PolicyArticleRead]:
-    return await service.search_after_sales_policy(PolicySearchInput(query=q))
+    return await service.search_after_sales_policy(q)
 
 
 @router.post("/tickets", response_model=TicketRead)
@@ -89,19 +86,19 @@ async def get_ticket(
     _: None = Depends(require_api_key),
 ) -> TicketRead:
     try:
-        return await service.get_ticket_detail(TicketLookupInput(ticket_id=ticket_id))
+        return await service.get_ticket_detail(ticket_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/refund-requests", response_model=RefundRequestRead)
-async def create_refund_request(
+async def submit_refund_request(
     payload: RefundRequestCreate,
     service: AfterSalesService = Depends(get_after_sales_service),
     _: None = Depends(require_api_key),
 ) -> RefundRequestRead:
     try:
-        refund = await service.create_refund_request(payload)
+        refund = await service.submit_refund_request(payload)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return refund
