@@ -7,8 +7,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from agent_runtime.langchain.runtime_state_store import AgentRuntimeStateStore
 from app_api.composition.bootstrap import build_container
-from app_api.composition.container import RuntimeStateStore
 from app_api.routers.after_sales_approvals import router as after_sales_approvals_router
 from app_api.routers.after_sales_resources import router as after_sales_resources_router
 from app_api.routers.after_sales_runs import router as after_sales_runs_router
@@ -21,7 +21,7 @@ def create_app(
     settings: AppSettings | None = None,
     *,
     chat_model_override: BaseChatModel | None = None,
-    runtime_state_store_override: RuntimeStateStore | None = None,
+    runtime_state_store_override: AgentRuntimeStateStore | None = None,
 ) -> FastAPI:
     resolved_settings = settings or AppSettings()
 

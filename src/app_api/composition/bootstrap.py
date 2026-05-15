@@ -27,13 +27,13 @@ from agent_runtime.langchain.checkpoint.local_memory import (
     InMemoryStateStore,
 )
 from agent_runtime.langchain.runtime import LangChainAgentRuntime
+from agent_runtime.langchain.runtime_state_store import AgentRuntimeStateStore
 from app_api.composition.after_sales_agent_factory import (
     build_after_sales_agent_definition,
 )
 from app_api.composition.container import (
     AppContainer,
     DependencyStatus,
-    RuntimeStateStore,
 )
 from app_api.migrations import upgrade_business_database
 from app_api.projectors.after_sales_run_projector import AfterSalesRunProjector
@@ -43,8 +43,8 @@ from app_api.use_cases.after_sales_agent_use_case import AfterSalesAgentUseCase
 
 def build_runtime_state_store(
     settings: AppSettings,
-    runtime_state_store_override: RuntimeStateStore | None,
-) -> RuntimeStateStore:
+    runtime_state_store_override: AgentRuntimeStateStore | None,
+) -> AgentRuntimeStateStore:
     if runtime_state_store_override is not None:
         return runtime_state_store_override
     if settings.agent_runtime_database_url:
@@ -117,7 +117,7 @@ async def build_container(
     settings: AppSettings,
     *,
     chat_model_override: BaseChatModel | None = None,
-    runtime_state_store_override: RuntimeStateStore | None = None,
+    runtime_state_store_override: AgentRuntimeStateStore | None = None,
 ) -> AppContainer:
     if settings.auto_create_schema:
         upgrade_business_database(database_url=settings.business_database_url)

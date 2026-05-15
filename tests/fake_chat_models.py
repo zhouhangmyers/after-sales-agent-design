@@ -109,7 +109,7 @@ class DeterministicToolCallingChatModel(BaseChatModel):
         tool_name: str,
         arguments: dict[str, Any],
         *,
-        tool_call_id: str | None = None,
+        tool_call_id: str,
     ) -> AIMessage:
         return AIMessage(
             content="",
@@ -117,7 +117,7 @@ class DeterministicToolCallingChatModel(BaseChatModel):
                 {
                     "name": tool_name,
                     "args": arguments,
-                    "id": tool_call_id or f"call_{tool_name}",
+                    "id": tool_call_id,
                     "type": "tool_call",
                 }
             ],

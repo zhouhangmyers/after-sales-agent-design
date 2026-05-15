@@ -3,12 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from agent_runtime.langchain.checkpoint.langgraph_postgres import (
-    LangGraphPostgresStateStore,
-)
-from agent_runtime.langchain.checkpoint.local_memory import (
-    InMemoryStateStore,
-)
+from agent_runtime.langchain.runtime_state_store import AgentRuntimeStateStore
 
 if TYPE_CHECKING:
     from after_sales.application.services.after_sales_service import (
@@ -23,8 +18,6 @@ if TYPE_CHECKING:
         AfterSalesAgentUseCase,
     )
 
-RuntimeStateStore = InMemoryStateStore | LangGraphPostgresStateStore
-
 
 @dataclass(slots=True, frozen=True)
 class DependencyStatus:
@@ -36,7 +29,7 @@ class DependencyStatus:
 class AppContainer:
     settings: AppSettings
     business_database: BusinessDatabase
-    runtime_state_store: RuntimeStateStore
+    runtime_state_store: AgentRuntimeStateStore
     after_sales_service: AfterSalesService
     after_sales_agent_use_case: AfterSalesAgentUseCase | None
     agent_registry: AgentRegistry

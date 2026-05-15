@@ -109,11 +109,19 @@ class MathRoutingChatModel(DeterministicToolCallingChatModel):
         if "multiply" in content and "multiply" in available:
             arguments = self.extract_number_arguments(content)
             if arguments is not None:
-                return self.tool_call_message("multiply", arguments)
+                return self.tool_call_message(
+                    "multiply",
+                    arguments,
+                    tool_call_id="call_multiply",
+                )
         if "add" in content and "add" in available:
             arguments = self.extract_number_arguments(content)
             if arguments is not None:
-                return self.tool_call_message("add", arguments)
+                return self.tool_call_message(
+                    "add",
+                    arguments,
+                    tool_call_id="call_add",
+                )
         return AIMessage(content=f"直接回复：{content}")
 
 

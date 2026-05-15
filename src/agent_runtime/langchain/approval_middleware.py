@@ -49,6 +49,9 @@ class LangChainApprovalMiddleware(
         tool_arguments = first_tool_call.get("args")
         if not isinstance(tool_name, str) or not isinstance(tool_arguments, dict):
             return None
+        tool_call_id = first_tool_call.get("id")
+        if not isinstance(tool_call_id, str) or not tool_call_id:
+            raise RuntimeError("tool_call id is required for approval interrupts")
 
         tool_spec = self._tool_specs.get(tool_name)
         if tool_spec is None or tool_spec.approval_policy is None:
@@ -59,7 +62,7 @@ class LangChainApprovalMiddleware(
             return None
 
         pending_action = AgentPendingAction(
-            action_id=first_tool_call.get("id") or tool_name,
+            action_id=tool_call_id,
             action_name=tool_name,
             action_payload=tool_arguments,
             reason=approval_requirement.reason,

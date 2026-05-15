@@ -68,6 +68,7 @@ class MCPRoutingChatModel(DeterministicToolCallingChatModel):
         return self.tool_call_message(
             "mcp_weather_get_weather",
             {"location": "Shanghai"},
+            tool_call_id="call_mcp_weather_get_weather",
         )
 
     def respond_from_tool_message(self, message: ToolMessage) -> AIMessage:

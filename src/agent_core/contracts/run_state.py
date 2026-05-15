@@ -40,6 +40,18 @@ class AgentError(BaseModel):
 # Run 结果和状态
 # =============================================================================
 class AgentRunResult(BaseModel):
+    """一次 run/act 调用结束当前执行段时返回给调用方的结果。
+
+    设计意图：
+    Agent 可能一次性完成，也可能因为人工审批等 interrupt 暂停。
+    AgentRunResult 表达的是“这次调用跑到当前边界时，应该返回什么”。
+
+    用法：
+    - RunCompletedEvent 携带 AgentRunResult 作为流式执行的收尾事件。
+    - use case 的 run()/act() 等待 RunCompletedEvent 后，把它作为调用结果返回。
+    - 不放查询态扩展信息；需要查询当前 run 快照时使用 RunState。
+    """
+
     run_id: str  # 本次 Agent 运行的唯一 id。
     session_id: str  # 运行所属会话 id，用于串联上下文和前端会话。
     capability_id: str  # 被调用的 Agent 能力 id。
@@ -50,6 +62,18 @@ class AgentRunResult(BaseModel):
 
 
 class RunState(BaseModel):
+    """按 run_id 查询出来的当前运行状态快照。
+
+    设计意图：
+    调用方可能在 run 结束后、人工审批前后、或页面刷新后查询当前状态。
+    RunState 表达的是“这个 run 现在是什么样”，而不是某次调用的返回值。
+
+    用法：
+    - get_state() 返回 RunState，用于恢复页面、展示 pending_action、错误和当前输出。
+    - 可以携带 metadata，例如 token usage 这类运行级扩展信息。
+    - 与 AgentRunResult 字段相似，但语义是查询快照，不是执行流的收尾结果。
+    """
+
     run_id: str  # 本次 Agent 运行的唯一 id。
     session_id: str  # 运行所属会话 id，用于恢复和追踪上下文。
     capability_id: str  # 被调用的 Agent 能力 id。

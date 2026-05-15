@@ -90,7 +90,11 @@ class AfterSalesRoutingChatModel(DeterministicToolCallingChatModel):
 
         if order_id and ("物流" in content or "到哪" in content or "shipment" in content.lower()):
             if "get_shipment_detail" in available_tools:
-                return self.tool_call_message("get_shipment_detail", {"order_id": order_id})
+                return self.tool_call_message(
+                    "get_shipment_detail",
+                    {"order_id": order_id},
+                    tool_call_id="call_get_shipment_detail",
+                )
 
         if order_id and "退款" in content:
             amount = self._extract_refund_amount(content)
@@ -102,6 +106,7 @@ class AfterSalesRoutingChatModel(DeterministicToolCallingChatModel):
                         "amount": amount,
                         "reason": content,
                     },
+                    tool_call_id="call_submit_refund_request",
                 )
 
         if order_id and any(keyword in content for keyword in ["坏了", "破损", "退货", "换货"]):
@@ -114,20 +119,33 @@ class AfterSalesRoutingChatModel(DeterministicToolCallingChatModel):
                         "summary": content,
                         "priority": "normal",
                     },
+                    tool_call_id="call_create_ticket",
                 )
 
         ticket_id = self._extract_ticket_id(content)
         if ticket_id and ("工单" in content or "ticket" in content.lower()):
             if "get_ticket_detail" in available_tools:
-                return self.tool_call_message("get_ticket_detail", {"ticket_id": ticket_id})
+                return self.tool_call_message(
+                    "get_ticket_detail",
+                    {"ticket_id": ticket_id},
+                    tool_call_id="call_get_ticket_detail",
+                )
 
         if order_id and ("订单" in content or "查一下" in content or "order" in content.lower()):
             if "get_order_detail" in available_tools:
-                return self.tool_call_message("get_order_detail", {"order_id": order_id})
+                return self.tool_call_message(
+                    "get_order_detail",
+                    {"order_id": order_id},
+                    tool_call_id="call_get_order_detail",
+                )
 
         if any(keyword in content for keyword in ["退款", "政策", "规则", "破损"]):
             if "search_after_sales_policy" in available_tools:
-                return self.tool_call_message("search_after_sales_policy", {"query": "破损"})
+                return self.tool_call_message(
+                    "search_after_sales_policy",
+                    {"query": "破损"},
+                    tool_call_id="call_search_after_sales_policy",
+                )
 
         return AIMessage(content="当前模型没找到需要调用工具的场景。")
 

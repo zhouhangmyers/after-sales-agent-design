@@ -21,14 +21,13 @@ def to_run_result(
     definition: AgentDefinition,
     run_id: str,
     state_values: LangChainAgentState,
-    invocation_result: dict[str, Any],
     interrupts: tuple[Any, ...],
 ) -> AgentRunResult:
     pending_action = pending_action_from_interrupts(interrupts)
     if pending_action is not None:
         return AgentRunResult(
             run_id=run_id,
-            session_id=session_id_from_state(state_values, default=run_id),
+            session_id=session_id_from_state(state_values),
             capability_id=definition.capability_id,
             status="awaiting_action",
             output=awaiting_action_message(pending_action),
@@ -40,18 +39,17 @@ def to_run_result(
         error = AgentError.model_validate(error_payload)
         return AgentRunResult(
             run_id=run_id,
-            session_id=session_id_from_state(state_values, default=run_id),
+            session_id=session_id_from_state(state_values),
             capability_id=definition.capability_id,
             status="failed",
             output=error.message,
             error=error,
         )
 
-    messages = invocation_result.get("messages")
-    output = _latest_ai_text(messages) or _latest_ai_text(state_values.get("messages"))
+    output = _latest_ai_text(state_values.get("messages"))
     return AgentRunResult(
         run_id=run_id,
-        session_id=session_id_from_state(state_values, default=run_id),
+        session_id=session_id_from_state(state_values),
         capability_id=definition.capability_id,
         status="completed",
         output=output,
@@ -87,7 +85,7 @@ def to_run_state(
     )
     return RunState(
         run_id=run_id,
-        session_id=session_id_from_state(state_values, default=run_id),
+        session_id=session_id_from_state(state_values),
         capability_id=definition.capability_id,
         status=status,
         output=output,
@@ -112,11 +110,11 @@ def pending_action_from_interrupts(
     return AgentPendingAction.model_validate(pending_action)
 
 
-def session_id_from_state(state_values: LangChainAgentState, *, default: str) -> str:
+def session_id_from_state(state_values: LangChainAgentState) -> str:
     session_id = state_values.get("session_id")
     if isinstance(session_id, str) and session_id:
         return session_id
-    return default
+    raise RuntimeError("session_id is required in LangChain agent state")
 
 
 def awaiting_action_message(pending_action: AgentPendingAction) -> str:

@@ -26,18 +26,11 @@ from agent_core.contracts.run_state import (
 )
 from agent_core.contracts.tool_spec import ToolContext
 from agent_runtime.langchain.approval_middleware import LangChainApprovalMiddleware
-from agent_runtime.langchain.checkpoint.langgraph_postgres import (
-    LangGraphPostgresStateStore,
-)
-from agent_runtime.langchain.checkpoint.local_memory import (
-    InMemoryStateStore,
-)
 from agent_runtime.langchain.event_mapper import ToolInvocation, events_from_stream_part
 from agent_runtime.langchain.result_mapper import to_run_result, to_run_state
+from agent_runtime.langchain.runtime_state_store import AgentRuntimeStateStore
 from agent_runtime.langchain.state import LangChainAgentState, LangChainRuntimeContext
 from agent_runtime.langchain.tool_adapter import to_langchain_tool
-
-RuntimeStateStore = InMemoryStateStore | LangGraphPostgresStateStore
 
 
 class LangChainAgentRuntime:
@@ -45,7 +38,7 @@ class LangChainAgentRuntime:
         self,
         *,
         model: BaseChatModel,
-        state_store: RuntimeStateStore,
+        state_store: AgentRuntimeStateStore,
         max_steps: int,
     ) -> None:
         self._model = model
@@ -212,7 +205,6 @@ class LangChainAgentRuntime:
             definition=definition,
             run_id=run_id,
             state_values=state,
-            invocation_result=cast(dict[str, Any], state),
             interrupts=snapshot.interrupts,
         )
         await self._persist_session_transcript(run_result=result, state_values=state)

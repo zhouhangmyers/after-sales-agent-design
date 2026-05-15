@@ -69,15 +69,14 @@ def _tool_events_from_task_part(
         return []
 
     task_id = payload.get("id")
-    if not isinstance(task_id, str):
-        task_id = ""
+    if not isinstance(task_id, str) or not task_id:
+        return []
 
     if "input" in payload and "result" not in payload and "error" not in payload:
         invocation = _tool_invocation_from_task_input(payload["input"])
         if invocation is None:
             return []
-        if task_id:
-            tool_tasks[task_id] = invocation
+        tool_tasks[task_id] = invocation
         return [
             ActionStartedEvent(
                 run_id=run_id,
@@ -89,14 +88,6 @@ def _tool_events_from_task_part(
 
     invocation = tool_tasks.pop(task_id, None)
     tool_message = _tool_message_from_task_result(payload.get("result"))
-    if invocation is None and tool_message is not None:
-        action_name = tool_message.name or tool_message.tool_call_id
-        invocation = ToolInvocation(
-            action_id=tool_message.tool_call_id or action_name,
-            action_name=action_name,
-            action_payload={},
-            started_at=perf_counter(),
-        )
     if invocation is None:
         return []
 
@@ -134,11 +125,12 @@ def _tool_invocation_from_task_input(payload: object) -> ToolInvocation | None:
         return None
     tool_arguments = tool_call.get("args")
     if not isinstance(tool_arguments, dict):
-        tool_arguments = {}
+        return None
     tool_call_id = tool_call.get("id")
-    action_id = tool_call_id if isinstance(tool_call_id, str) and tool_call_id else action_name
+    if not isinstance(tool_call_id, str) or not tool_call_id:
+        return None
     return ToolInvocation(
-        action_id=action_id,
+        action_id=tool_call_id,
         action_name=action_name,
         action_payload=tool_arguments,
         started_at=perf_counter(),
