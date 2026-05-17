@@ -6,9 +6,7 @@
 
 ## 效果演示
 
-<video src="./售后智能体示例-github.mp4" controls width="100%"></video>
-
-如果 GitHub 页面没有显示播放器，可以直接打开演示视频：[售后智能体示例-github.mp4](./售后智能体示例-github.mp4)。
+https://github.com/user-attachments/assets/f4b5ad76-2fe1-433a-bb8b-d6fd9b0f440e
 
 ## 核心能力
 
