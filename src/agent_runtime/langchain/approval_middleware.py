@@ -42,6 +42,9 @@ class LangChainApprovalMiddleware(
         if last_ai_message is None or not last_ai_message.tool_calls:
             return None
 
+        # LangGraph 的 messages 使用 add_messages 合并；相同 id 的消息会替换旧消息。
+        # 这里保留原 AIMessage.id，只把 tool_calls 收敛成一个，避免拒绝审批后
+        # 追加 ToolMessage 时留下未配对的多余 tool_call。
         first_tool_call = last_ai_message.tool_calls[0]
         last_ai_message.tool_calls = [first_tool_call]
 

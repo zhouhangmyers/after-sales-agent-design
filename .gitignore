@@ -17,6 +17,12 @@ frontend/node_modules/
 *.sqlite
 *.sqlite3
 
+*简历*.md
+*resume*
+*Resume*
+*CV*
+*cv*
+
 *.egg-info/
 build/
 dist/
