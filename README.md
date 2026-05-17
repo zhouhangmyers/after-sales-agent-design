@@ -6,7 +6,7 @@
 
 ## 效果演示
 
-https://github.com/user-attachments/assets/f4b5ad76-2fe1-433a-bb8b-d6fd9b0f440e
+[https://github.com/user-attachments/assets/f4b5ad76-2fe1-433a-bb8b-d6fd9b0f440e](https://github.com/user-attachments/assets/3da5c1fb-d590-4f52-a41f-bb5dc8b6d984)
 
 ## 核心能力
 
