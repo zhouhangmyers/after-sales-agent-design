@@ -1,3 +1,5 @@
+SHELL := /bin/bash
+
 PYTHON ?= .venv/bin/python
 NPM ?= npm
 HOST ?= 127.0.0.1
@@ -8,24 +10,31 @@ DEFAULT_BUSINESS_DB ?= sqlite+pysqlite:///./after_sales_mvp.db
 
 .PHONY: frontend backend start frontend-start backend-start seed test doctor migrate
 
-frontend backend:
-	@:
+frontend:
+	cd frontend && $(NPM) run dev -- --host $(FRONTEND_HOST) --port $(FRONTEND_PORT) --strictPort
+
+backend:
+	APP_ENV=$${APP_ENV:-dev} \
+	BUSINESS_DATABASE_URL=$${BUSINESS_DATABASE_URL:-$(DEFAULT_BUSINESS_DB)} \
+	AUTO_CREATE_SCHEMA=$${AUTO_CREATE_SCHEMA:-true} \
+	$(PYTHON) -m uvicorn app_api.main:create_app --factory --app-dir src --reload --host $(HOST) --port $(PORT)
 
 start:
-	@if echo " $(MAKECMDGOALS) " | grep -q " frontend "; then \
-		cd frontend && $(NPM) run dev -- --host $(FRONTEND_HOST) --port $(FRONTEND_PORT); \
-	else \
-		APP_ENV=$${APP_ENV:-dev} \
-		BUSINESS_DATABASE_URL=$${BUSINESS_DATABASE_URL:-$(DEFAULT_BUSINESS_DB)} \
-		AUTO_CREATE_SCHEMA=$${AUTO_CREATE_SCHEMA:-true} \
-		$(PYTHON) -m uvicorn app_api.main:create_app --factory --app-dir src --reload --host $(HOST) --port $(PORT); \
-	fi
+	@$(MAKE) backend & backend_pid=$$!; \
+	$(MAKE) frontend & frontend_pid=$$!; \
+	trap 'kill $$backend_pid $$frontend_pid 2>/dev/null || true; wait $$backend_pid $$frontend_pid 2>/dev/null || true' INT TERM EXIT; \
+	wait -n $$backend_pid $$frontend_pid; \
+	status=$$?; \
+	kill $$backend_pid $$frontend_pid 2>/dev/null || true; \
+	wait $$backend_pid $$frontend_pid 2>/dev/null || true; \
+	trap - INT TERM EXIT; \
+	exit $$status
 
 frontend-start:
-	@$(MAKE) frontend start
+	@$(MAKE) frontend
 
 backend-start:
-	@$(MAKE) backend start
+	@$(MAKE) backend
 
 seed:
 	BUSINESS_DATABASE_URL=$${BUSINESS_DATABASE_URL:-$(DEFAULT_BUSINESS_DB)} \
