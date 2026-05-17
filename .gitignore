@@ -9,8 +9,8 @@ __pycache__/
 node_modules/
 frontend/node_modules/
 
-# .env
-# .env.*
+.env
+.env.*
 # !.env.example
 
 *.db
