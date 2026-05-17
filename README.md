@@ -4,6 +4,12 @@
 
 当前仓库使用电商售后作为业务落地场景：订单查询、物流追踪、工单处理、退款申请、人工审批和坐席工作台都只是这套 runtime 的一个 reference implementation。换成财务审批、合同审核、运维处置或内部知识助手时，核心 runtime、工具契约和运行事件模型可以复用，业务层只需要替换领域服务和工具适配。
 
+## 效果演示
+
+<video src="售后智能体示例.mp4" controls width="100%"></video>
+
+[直接打开演示视频](售后智能体示例.mp4)
+
 ## 核心能力
 
 - 自研通用 runtime：封装 `create_agent`、LangGraph checkpoint、interrupt/resume、工具适配、事件映射和运行结果归一化。

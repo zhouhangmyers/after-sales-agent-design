@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -21,11 +20,7 @@ from after_sales.infrastructure.persistence.sqlalchemy.models import (
 from after_sales.infrastructure.persistence.sqlalchemy.session import (
     BusinessDatabase,
 )
-
-DATABASE_URL = os.getenv(
-    "BUSINESS_DATABASE_URL",
-    "sqlite+pysqlite:///./after_sales_mvp.db",
-)
+from app_api.settings import AppSettings
 
 
 def utcnow() -> datetime:
@@ -33,7 +28,8 @@ def utcnow() -> datetime:
 
 
 async def seed() -> None:
-    business_database = BusinessDatabase(DATABASE_URL)
+    settings = AppSettings()
+    business_database = BusinessDatabase(settings.business_database_url)
     await business_database.create_schema()
 
     now = utcnow()
@@ -223,4 +219,4 @@ async def seed() -> None:
 
 if __name__ == "__main__":
     asyncio.run(seed())
-    print("seed completed for after_sales_mvp.db")
+    print("seed completed")

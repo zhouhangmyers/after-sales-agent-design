@@ -59,8 +59,24 @@ def build_after_sales_agent_definition(
         context: ToolContext,
     ) -> dict[str, Any]:
         del context
-        ticket = await after_sales_service.create_ticket(TicketCreate.model_validate(payload))
-        return ticket.model_dump(mode="json")
+        created_ticket = await after_sales_service.create_ticket(
+            TicketCreate.model_validate(payload)
+        )
+        verified_ticket = await after_sales_service.get_ticket_detail(
+            created_ticket.ticket_id
+        )
+        if verified_ticket.ticket_id != created_ticket.ticket_id:
+            raise RuntimeError(
+                f"ticket persistence verification mismatch: {created_ticket.ticket_id}"
+            )
+        return {
+            **verified_ticket.model_dump(mode="json"),
+            "persistence": {
+                "verified": True,
+                "checked_by": "get_ticket_detail",
+                "checked_ticket_id": verified_ticket.ticket_id,
+            },
+        }
 
     async def get_ticket_detail(
         payload: dict[str, Any],
@@ -116,7 +132,9 @@ def build_after_sales_agent_definition(
             "你的目标是帮助用户完成查单、查物流、建工单、退款申请和售后政策解释。",
             "当用户查询订单状态时，优先调用 get_order_detail。",
             "当用户追问物流状态、运输位置、到哪了时，优先调用 get_shipment_detail。",
-            "当用户描述破损、退货、换货并要求登记处理时，优先调用 create_ticket。",
+            "当用户明确要求登记、创建、生成或提交售后工单，并且提供订单号和问题描述时，必须调用 create_ticket，不能只口头承诺已经创建。",
+            "如果用户要建工单但缺少订单号或问题描述，先追问缺失信息，不要编造。",
+            "调用 create_ticket 后，必须根据工具返回的 persistence.verified 字段回复；只有 verified 为 true 时，才告诉用户工单已写入数据库并返回工单号。",
             "当用户追问工单状态时，调用 get_ticket_detail。",
             "当用户明确要求退款并提供订单号、金额和原因时，调用 submit_refund_request。",
             "回复必须简洁、专业、中文输出。",
@@ -145,7 +163,7 @@ def build_after_sales_agent_definition(
             ),
             ToolSpec(
                 name="create_ticket",
-                description="创建售后工单，适用于破损、退货、换货等问题登记。",
+                description="创建售后工单，适用于破损、退货、换货等问题登记。工具会先写入业务数据库，再按 ticket_id 查询数据库确认持久化，返回 persistence.verified。只有调用该工具且 verified=true 才表示工单真正写入数据库，不能用纯文本回复代替。",
                 args_schema=TicketCreate,
                 handler=create_ticket,
             ),

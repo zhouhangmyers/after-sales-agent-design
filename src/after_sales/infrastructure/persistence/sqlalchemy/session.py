@@ -33,6 +33,8 @@ def _is_sqlite(database_url: str) -> bool:
 def _sync_database_url(database_url: str) -> str:
     if database_url.startswith("sqlite+aiosqlite://"):
         return database_url.replace("sqlite+aiosqlite://", "sqlite+pysqlite://", 1)
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
     return database_url
 
 

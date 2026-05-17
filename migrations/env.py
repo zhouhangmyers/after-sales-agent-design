@@ -24,6 +24,8 @@ if config.config_file_name is not None:
 # 这样同一套迁移脚本既可以跑本地 SQLite，也可以切到 PostgreSQL。
 database_url = os.getenv("DATABASE_URL")
 if database_url:
+    if database_url.startswith("postgresql://"):
+        database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
     config.set_main_option("sqlalchemy.url", database_url)
 
 target_metadata = Base.metadata

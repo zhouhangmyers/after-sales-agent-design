@@ -11,6 +11,7 @@ from after_sales.infrastructure.persistence.sqlalchemy import (
 )
 from after_sales.infrastructure.persistence.sqlalchemy.session import (
     Base,
+    _sync_database_url,
 )
 
 _ = _after_sales_models
@@ -26,12 +27,12 @@ def _project_root() -> Path:
 
 def build_alembic_config(*, database_url: str) -> Config:
     config = Config(str(_project_root() / "alembic.ini"))
-    config.set_main_option("sqlalchemy.url", database_url)
+    config.set_main_option("sqlalchemy.url", _sync_database_url(database_url))
     return config
 
 
 def _infer_unversioned_revision(*, database_url: str) -> str | None:
-    engine = create_engine(database_url, future=True)
+    engine = create_engine(_sync_database_url(database_url), future=True)
     try:
         inspector = inspect(engine)
         available_tables = set(inspector.get_table_names())
