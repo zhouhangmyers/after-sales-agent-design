@@ -6,9 +6,7 @@
 
 ## 效果演示
 
-<video src="售后智能体示例.mp4" controls width="100%"></video>
-
-[直接打开演示视频](售后智能体示例.mp4)
+<video src="https://raw.githubusercontent.com/zhouhangmyers/after-sales-agent-design/main/%E5%94%AE%E5%90%8E%E6%99%BA%E8%83%BD%E4%BD%93%E7%A4%BA%E4%BE%8B.mp4" controls width="100%"></video>
 
 ## 核心能力
 
