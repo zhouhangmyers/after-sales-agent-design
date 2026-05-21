@@ -1,23 +1,38 @@
 # Agent Orchestrator Platform
 
-一套面向业务系统的通用 Agent 编排平台。项目核心不是单个售后助手，而是在 `LangChain v1` 和 `LangGraph` 之上二次开发了一层自研 Agent Runtime，用统一的内部契约管理 Agent 定义、工具执行、运行事件、审批中断、状态恢复和审计投影。
+一个面向业务系统的通用 Agent 编排平台。
 
-当前仓库使用电商售后作为业务落地场景：订单查询、物流追踪、工单处理、退款申请、人工审批和坐席工作台都只是这套 runtime 的一个 reference implementation。换成财务审批、合同审核、运维处置或内部知识助手时，核心 runtime、工具契约和运行事件模型可以复用，业务层只需要替换领域服务和工具适配。
+这个项目不是单纯的“售后客服机器人”，而是在 `LangChain v1` 和 `LangGraph` 之上封装了一层项目自有的 Agent Runtime，用稳定的内部契约管理 Agent 定义、工具执行、审批中断、状态恢复、事件流和审计投影。
 
-## 效果演示
+当前仓库以电商售后作为落地场景：查订单、查物流、创建工单、退款申请、人工审批、审计记录和坐席工作台。售后业务只是 reference implementation，核心设计可以迁移到财务审批、合同审核、运维处置、招聘匹配、企业知识助手等其它领域。
+
+## Demo
 
 [https://github.com/user-attachments/assets/f4b5ad76-2fe1-433a-bb8b-d6fd9b0f440e](https://github.com/user-attachments/assets/3da5c1fb-d590-4f52-a41f-bb5dc8b6d984)
 
+## 项目定位
+
+这个项目重点验证的是 Agent 应用中最容易散落的工程问题：
+
+- 如何让业务工具、本地服务和外部 MCP 工具都通过统一协议暴露给 Agent。
+- 如何把 LangChain/LangGraph 的底层事件、checkpoint、interrupt/resume 收敛成项目自己的运行模型。
+- 如何在高风险工具调用前暂停，并在人工审批后从同一个 `run_id` 恢复。
+- 如何把运行事件投影为业务侧可查询的工具日志、审批记录和审计日志。
+- 如何让 HTTP、CLI、前端、业务层和 Runtime 保持清晰边界。
+
+本项目刻意没有把 RAG 硬塞进主线。售后政策查询当前是轻量检索能力，未来可以替换成 RAG；但本项目的代表性重点是 Agent 编排、审批恢复、事件流和审计闭环。
+
 ## 核心能力
 
-- 自研通用 runtime：封装 `create_agent`、LangGraph checkpoint、interrupt/resume、工具适配、事件映射和运行结果归一化。
-- 框架无关契约：通过 `AgentDefinition`、`ToolSpec`、`RunEvent`、`RunState` 建立项目内部稳定协议，避免业务代码直接绑定 LangChain/MCP/FastAPI。
-- 工具编排：本地业务能力和外部 MCP 工具统一转换为 `ToolSpec`，runtime 只面向内部工具契约执行。
-- 审批中断：高风险工具调用可在执行前暂停，等待人工决策后从同一个 `run_id` 恢复。
-- 状态恢复：明确区分 `session_id` 和 `run_id`，分别管理多轮会话上下文和单次可恢复执行。
-- 事件流：将模型输出、工具调用、审批请求、运行完成和异常统一映射为 `RunEvent`，对外支持 SSE。
-- 审计投影：runtime 不直接写业务库，应用层 projector 将运行事件投影成工具日志、审批记录和审计日志。
-- 售后业务样例：内置订单、物流、工单、退款、政策检索和坐席工作台，用来验证 runtime 的完整闭环。
+- 自研 Runtime：封装 `create_agent`、LangGraph checkpoint、interrupt/resume、工具适配、事件映射和结果归一化。
+- 框架无关契约：通过 `AgentDefinition`、`ToolSpec`、`RunEvent`、`RunState` 隔离业务层和 LangChain/LangGraph。
+- 工具编排：本地业务工具和外部 MCP 工具统一转换为 `ToolSpec`。
+- 审批中断：退款等高风险动作可在工具执行前暂停，等待人工审批后恢复。
+- 状态分层：`session_id` 管理多轮会话上下文，`run_id` 管理单次可恢复执行。
+- SSE 事件流：模型输出、工具调用、审批请求、完成和失败事件统一对外推送。
+- 审计投影：Runtime 不直接写业务库，应用层 projector 将事件投影成业务日志。
+- 可降级启动：LLM/MCP 依赖失败时应用可 degraded 启动，健康检查展示原因。
+- 前后端闭环：FastAPI 后端和 React 坐席工作台覆盖查询、运行、审批和审计。
 
 内置示例数据：
 
@@ -30,15 +45,15 @@
 
 后端：
 
-- `FastAPI`：HTTP API、依赖注入与 OpenAPI 文档。
-- `SQLAlchemy 2.x`：业务数据建模和异步数据库访问。
-- `Alembic`：数据库迁移。
-- `Pydantic v2` / `pydantic-settings`：数据模型与应用配置。
-- `LangChain v1`：底层 Agent 创建、模型调用和工具执行能力。
-- `LangGraph`：底层 checkpoint、interrupt、resume 和运行状态恢复能力。
-- `sse-starlette`：SSE 事件流。
-- `langchain-deepseek` / `langchain-openai`：LLM provider 接入。
-- `langchain-mcp-adapters`：MCP server 工具接入。
+- `FastAPI`
+- `SQLAlchemy 2.x`
+- `Alembic`
+- `Pydantic v2` / `pydantic-settings`
+- `LangChain v1`
+- `LangGraph`
+- `sse-starlette`
+- `langchain-deepseek` / `langchain-openai`
+- `langchain-mcp-adapters`
 
 前端：
 
@@ -53,86 +68,153 @@
 ```text
 Client / Frontend
   -> app_api
-     -> 自研 Agent Runtime
-        -> agent_core contracts
-        -> agent_runtime/langchain
-        -> agent_integrations
-     -> business domain
-        -> after_sales
+     -> composition root
+     -> use cases / projectors
+     -> HTTP routers / CLI
+  -> agent_core contracts
+     -> AgentDefinition / ToolSpec / RunEvent / RunState
+  -> agent_runtime
+     -> LangChainAgentRuntime
+     -> approval middleware
+     -> event/result mapper
+     -> checkpoint store
+  -> agent_integrations
+     -> LLM factory
+     -> MCP tool provider
+  -> after_sales
+     -> domain models
+     -> application service
+     -> repositories / unit of work
 ```
 
 主要模块：
 
-- `src/app_api`：应用入口层，负责 HTTP 路由、依赖装配、应用用例、运行事件投影和 API schema。
-- `src/after_sales`：售后业务层，管理客户、订单、物流、工单、退款、政策和审计数据。
-- `src/agent_core`：通用 Agent 契约层，定义 `AgentDefinition`、`ToolSpec`、`RunEvent`、`RunState`。
-- `src/agent_runtime`：自研 Agent runtime 层，当前以 LangChain/LangGraph 为底座实现。
-- `src/agent_integrations`：外部能力集成层，包括 LLM factory 和 MCP tool provider。
+- `src/agent_core`：框架无关契约层，定义 Agent、工具、事件和状态协议。
+- `src/agent_runtime`：通用执行层，当前基于 LangChain/LangGraph 实现。
+- `src/agent_integrations`：外部集成层，包含 LLM factory 和 MCP tool provider。
+- `src/after_sales`：售后业务层，包含领域模型、服务、仓储和事务边界。
+- `src/app_api`：应用装配与入口层，包含 bootstrap、use case、projector、HTTP 路由和 CLI。
 - `frontend`：售后坐席工作台。
 
-业务层不依赖 Agent runtime，runtime 也不感知订单、退款、工单等业务语义。两者通过 `ToolSpec` 和应用层 composition 连接。这个边界保证 runtime 是通用基础设施，售后只是当前接入的一套业务能力。
+核心边界：
 
-## 自研 Runtime
+- 业务层不依赖 FastAPI、LangChain 或 MCP。
+- Runtime 不感知订单、退款、工单等售后语义。
+- 业务能力通过 `ToolSpec` 接入 Agent。
+- 运行状态和业务审计分库存储、分层管理。
 
-`src/agent_runtime/langchain` 不是直接把 LangChain 暴露给业务层，而是在 LangChain/LangGraph 之上做了一层平台化封装。
+## 关键设计
 
-它负责把底层框架能力整理成项目自己的运行时模型：
+### 1. 通用工具契约
 
+项目内部不直接把业务函数或 MCP 工具塞给 LangChain，而是统一包装成 `ToolSpec`：
+
+```text
+ToolSpec
+  -> name
+  -> description
+  -> args_schema
+  -> handler(payload, ToolContext)
+  -> approval_policy
+  -> source / source_id
+```
+
+本地售后工具和外部 MCP 工具都遵守这套协议。Runtime 只负责执行 `ToolSpec`，不需要知道工具来自业务服务还是 MCP server。
+
+### 2. 自研 Runtime 封装
+
+`src/agent_runtime/langchain` 没有把 LangChain 原始接口直接暴露给业务层，而是做了一层平台化封装：
+
+- 将 `ToolSpec` 转换成 LangChain `StructuredTool`。
+- 注入 `ToolContext`。
 - 编译和缓存 Agent。
-- 将 `ToolSpec` 转换为 LangChain `StructuredTool`。
-- 注入 `ToolContext`，让工具执行时拿到统一运行上下文。
-- 将 LangChain stream part 映射为稳定的 `RunEvent`。
-- 使用 LangGraph checkpoint 管理 `run_id` 级运行状态。
-- 使用 session transcript 管理 `session_id` 级多轮上下文。
-- 通过 middleware 处理工具执行前审批。
-- 将 checkpoint snapshot 映射为可查询的 `RunState`。
-- 将单次执行结果归一化为 `AgentRunResult`。
+- 将底层 stream part 映射为稳定 `RunEvent`。
+- 使用 LangGraph checkpoint 管理可恢复执行。
+- 使用 middleware 在工具执行前处理审批中断。
+- 将 checkpoint snapshot 映射成 `RunState`。
+- 将最终输出归一化为 `AgentRunResult`。
 
-这层 runtime 的目标是把 Agent 应用里最容易散落的部分收拢起来：工具协议、审批恢复、事件流、状态查询、错误结构和会话历史。业务模块只需要提供领域服务和工具定义，不需要关心 LangChain stream 格式、LangGraph interrupt 细节或 checkpoint 存储实现。
+### 3. 审批中断与恢复
 
-## 通用契约
+退款工具挂载审批策略：
 
-平台内部以四个核心契约作为稳定边界：
+- 金额大于 `100` 元需要审批。
+- 原因包含 `破损` 或 `质量问题` 需要审批。
+- 金额和原因同时命中时标记为高风险。
 
-- `AgentDefinition`：描述一个 Agent 能力，包括能力 ID、名称、system prompt 和工具集合。
-- `ToolSpec`：描述一个可被模型调用的工具，包括参数 schema、handler、来源和审批策略。
-- `RunEvent`：描述 runtime 输出的运行事件，用于 SSE、前端展示和审计投影。
-- `RunState`：描述从 checkpoint 派生出的运行状态，用于页面刷新、审批恢复和状态查询。
+执行链路：
 
-这些契约让 runtime 不依赖具体业务，也让业务层不依赖 LangChain。未来如果底层从 LangChain/LangGraph 切到其它执行引擎，只要继续接收 `AgentDefinition` / `ToolSpec` 并输出 `RunEvent` / `RunState`，业务层和 API 层就不需要重写。
+```text
+用户请求退款
+  -> 模型选择 submit_refund_request
+  -> approval_policy.evaluate(payload)
+  -> ActionRequiredEvent
+  -> LangGraph interrupt
+  -> 前端展示待审批动作
+  -> POST /api/after-sales/actions
+  -> Command(resume={"decision": ...})
+  -> Runtime 从 checkpoint 恢复
+  -> 继续执行并返回结果
+```
 
-## 运行流程
+### 4. 事件流与审计投影
+
+Runtime 产出统一事件：
+
+- `RunStartedEvent`
+- `OutputDeltaEvent`
+- `ActionStartedEvent`
+- `ActionCompletedEvent`
+- `ActionRequiredEvent`
+- `RunCompletedEvent`
+- `RunFailedEvent`
+
+HTTP 层把这些事件映射为 SSE；projector 把这些事件写入业务库：
+
+- 工具调用日志
+- 审批记录
+- 审计日志
+
+这让 Agent 执行过程可展示、可恢复、可追踪，而不是只返回一段最终文本。
+
+## 典型流程
 
 普通 Agent run：
 
 ```text
 POST /api/after-sales/runs
-  -> AfterSalesAgentUseCase
-  -> 自研 LangChainAgentRuntime.stream_run()
-  -> 编译/复用 LangChain agent
-  -> ToolSpec -> LangChain StructuredTool
+  -> AfterSalesAgentUseCase.run()
+  -> LangChainAgentRuntime.stream_run()
+  -> AgentDefinition.tools
+  -> ToolSpec -> StructuredTool
   -> AfterSalesService
   -> UnitOfWork / Repository
   -> Business Database
+  -> RunCompletedEvent
+  -> RunResponse
 ```
 
-审批恢复流程：
+流式 Agent run：
 
 ```text
-submit_refund_request tool call
-  -> approval_policy 命中风险规则
-  -> ActionRequiredEvent
-  -> runtime 触发 LangGraph interrupt
-  -> POST /api/after-sales/actions
-  -> runtime 提交 Command(resume={"decision": ...})
-  -> 从 checkpoint 恢复并继续执行
+POST /api/after-sales/runs/stream
+  -> AfterSalesAgentUseCase.stream()
+  -> Runtime RunEvent stream
+  -> AfterSalesRunProjector.record_event()
+  -> after_sales_runs._map_event()
+  -> text/event-stream
 ```
 
-系统当前的退款审批规则：
+审批恢复：
 
-- 退款金额大于 `100` 元需要审批。
-- 退款原因包含 `破损` 或 `质量问题` 需要审批。
-- 金额和原因同时命中时标记为高风险。
+```text
+POST /api/after-sales/actions
+  -> AfterSalesAgentUseCase.act()
+  -> runtime.stream_action()
+  -> projector.resolve_approval()
+  -> Runtime resumes from checkpoint
+  -> RunCompletedEvent
+```
 
 ## 快速启动
 
@@ -192,6 +274,12 @@ make frontend-start
 
 - `http://127.0.0.1:5173`
 
+一键同时启动前后端：
+
+```bash
+make start
+```
+
 ## 常用命令
 
 ```bash
@@ -207,7 +295,7 @@ make seed
 # 检查依赖状态
 make doctor
 
-# 执行业务数据库迁移或建表
+# 执行业务数据库迁移和 runtime store 初始化
 make migrate
 
 # 运行测试
@@ -247,13 +335,16 @@ APPROVAL_TIMEOUT_SECONDS=900
 MCP_SERVERS={}
 ```
 
-关键配置说明：
+关键配置：
 
 - `APP_ENV`：应用环境。生产环境会启用更严格的配置校验。
 - `API_KEY`：配置后，受保护 API 需要请求头 `X-API-Key`。
 - `BUSINESS_DATABASE_URL`：售后业务库，默认使用本地 SQLite。
 - `AGENT_RUNTIME_DATABASE_URL`：Agent runtime 状态库。留空时使用内存 checkpointer；配置 PostgreSQL 后可持久化 checkpoint 和 session transcript。
 - `LLM_PROVIDER`：当前支持 `deepseek` 和 `openai`。
+- `LLM_MODEL`：模型名称。
+- `DEEPSEEK_API_KEY`：DeepSeek provider 使用的 API key。
+- `OPENAI_API_KEY`：OpenAI provider 使用的 API key。
 - `MAX_STEPS`：限制单次 Agent 执行步骤数。
 - `MCP_SERVERS`：可选 MCP server 配置，支持 `http`、`streamable_http` 和 `stdio` transport。
 
@@ -372,7 +463,19 @@ curl "http://127.0.0.1:8000/api/after-sales/policies/search?q=破损"
 - 业务数据：客户、订单、物流、工单、退款、政策、工具日志、审批记录和审计日志。
 - Agent 运行态：LangGraph checkpoint 与 session transcript。
 
-runtime 将这两类状态明确隔离：checkpoint 只服务于 Agent 执行恢复，业务数据库只保存业务事实和审计投影。这样不会把 LangGraph 的内部状态泄漏到业务模型里，也不会让业务事务依赖模型执行过程。
+这两类状态明确隔离：
+
+```text
+Business Database
+  -> 业务事实
+  -> 工具调用日志
+  -> 审批记录
+  -> 审计日志
+
+Runtime State Store
+  -> LangGraph checkpoint
+  -> session transcript
+```
 
 本地开发默认配置：
 
@@ -413,6 +516,7 @@ MCP_SERVERS={"weather":{"transport":"http","url":"http://localhost:8000/mcp"},"m
 - MCP tool registry。
 - LangChain runtime。
 - 事件映射与结果映射。
+- 审批中断与恢复。
 - FastAPI 集成接口。
 - README 和 `.env.example` 的公共接口一致性。
 
@@ -424,22 +528,44 @@ uv run pytest -q
 
 ## 推荐阅读路径
 
-1. [src/agent_core/contracts/agent_definition.py](src/agent_core/contracts/agent_definition.py)
-2. [src/agent_core/contracts/tool_spec.py](src/agent_core/contracts/tool_spec.py)
+如果只想快速理解项目主线，按这个顺序读：
+
+1. [src/agent_core/contracts/tool_spec.py](src/agent_core/contracts/tool_spec.py)
+2. [src/agent_core/contracts/agent_definition.py](src/agent_core/contracts/agent_definition.py)
 3. [src/agent_runtime/langchain/runtime.py](src/agent_runtime/langchain/runtime.py)
 4. [src/agent_runtime/langchain/approval_middleware.py](src/agent_runtime/langchain/approval_middleware.py)
 5. [src/agent_runtime/langchain/event_mapper.py](src/agent_runtime/langchain/event_mapper.py)
-6. [src/app_api/composition/bootstrap.py](src/app_api/composition/bootstrap.py)
-7. [src/app_api/composition/after_sales_agent_factory.py](src/app_api/composition/after_sales_agent_factory.py)
-8. [src/app_api/projectors/after_sales_run_projector.py](src/app_api/projectors/after_sales_run_projector.py)
-9. [src/after_sales/application/services/after_sales_service.py](src/after_sales/application/services/after_sales_service.py)
-10. [frontend/src/App.tsx](frontend/src/App.tsx)
+6. [src/app_api/composition/after_sales_agent_factory.py](src/app_api/composition/after_sales_agent_factory.py)
+7. [src/app_api/composition/bootstrap.py](src/app_api/composition/bootstrap.py)
+8. [src/app_api/use_cases/after_sales_agent_use_case.py](src/app_api/use_cases/after_sales_agent_use_case.py)
+9. [src/app_api/projectors/after_sales_run_projector.py](src/app_api/projectors/after_sales_run_projector.py)
+10. [src/after_sales/application/services/after_sales_service.py](src/after_sales/application/services/after_sales_service.py)
+11. [src/app_api/routers/after_sales_runs.py](src/app_api/routers/after_sales_runs.py)
+12. [frontend/src/App.tsx](frontend/src/App.tsx)
 
-## 设计边界
+## 面试讲述主线
 
-- `after_sales` 负责业务规则和事务边界，不依赖 FastAPI、LangChain 或 MCP。
-- `agent_runtime` 是通用执行层，负责 Agent 执行、checkpoint、interrupt/resume、事件映射和结果归一化。
-- `app_api` 是 composition root，负责把业务能力适配为 Agent 工具。
-- `agent_core` 保持框架无关，作为业务工具、MCP 工具和运行时之间的稳定契约。
-- 审批和审计是业务投影，不混入 LangGraph checkpoint。
-- `session_id` 用于多轮对话上下文，`run_id` 用于单次可恢复执行。
+可以用这条线解释项目：
+
+```text
+我没有直接写一个售后聊天机器人，而是先抽了一层通用 Agent 编排协议。
+
+业务侧通过 ToolSpec 暴露工具，Runtime 只认识 AgentDefinition 和 ToolSpec。
+LangChain/LangGraph 被封装在 runtime 内部，外部只消费 RunEvent 和 RunState。
+
+当模型要调用高风险工具时，approval_policy 会在工具执行前触发中断。
+Runtime 通过 LangGraph checkpoint 保存状态，前端审批后再用同一个 run_id 恢复执行。
+
+执行过程中的工具调用、审批请求、运行失败都会被 projector 投影到业务数据库，
+所以系统不只是能聊天，还能恢复、能审计、能给前端稳定展示。
+```
+
+## 封板说明
+
+当前版本作为“Agent 编排平台 + 售后业务 reference implementation”封板：
+
+- 核心主线已经闭环：工具协议、Runtime、审批恢复、事件流、审计投影、HTTP/CLI、前端。
+- 售后政策检索保留为轻量能力，不继续在本项目硬加 RAG。
+- 后续如果扩展，优先在新领域项目中复用这套编排思想，再补充 RAG、权限、多租户、观测和评测体系。
+
+这个项目的价值不在于售后业务本身，而在于证明一套 Agent 编排骨架可以被迁移到不同业务域。
