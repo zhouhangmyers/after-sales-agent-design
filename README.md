@@ -2,13 +2,13 @@
 
 一个面向业务系统的通用 Agent 编排平台。
 
-这个项目不是单纯的“售后客服机器人”，而是在 `LangChain v1` 和 `LangGraph` 之上封装了一层项目自有的 Agent Runtime，用稳定的内部契约管理 Agent 定义、工具执行、审批中断、状态恢复、事件流和审计投影。
+本项目为独立设计与实现的工程项目，不是单纯的“售后客服机器人”，而是在 `LangChain v1` 和 `LangGraph` 之上封装了一层项目自有的 Agent Runtime，用稳定的内部契约管理 Agent 定义、工具执行、审批中断、状态恢复、事件流和审计投影。
 
 当前仓库以电商售后作为落地场景：查订单、查物流、创建工单、退款申请、人工审批、审计记录和坐席工作台。售后业务只是 reference implementation，核心设计可以迁移到财务审批、合同审核、运维处置、招聘匹配、企业知识助手等其它领域。
 
 ## Demo
 
-[https://github.com/user-attachments/assets/f4b5ad76-2fe1-433a-bb8b-d6fd9b0f440e](https://github.com/user-attachments/assets/3da5c1fb-d590-4f52-a41f-bb5dc8b6d984)
+https://github.com/user-attachments/assets/3da5c1fb-d590-4f52-a41f-bb5dc8b6d984
 
 ## 项目定位
 
@@ -20,7 +20,7 @@
 - 如何把运行事件投影为业务侧可查询的工具日志、审批记录和审计日志。
 - 如何让 HTTP、CLI、前端、业务层和 Runtime 保持清晰边界。
 
-本项目刻意没有把 RAG 硬塞进主线。售后政策查询当前是轻量检索能力，未来可以替换成 RAG；但本项目的代表性重点是 Agent 编排、审批恢复、事件流和审计闭环。
+当前版本聚焦 Agent 编排、审批恢复、事件流和审计闭环。售后政策查询保留为轻量检索能力，后续可以在新业务场景中扩展为 RAG 或更完整的知识库能力。
 
 ## 核心能力
 
@@ -526,46 +526,13 @@ MCP_SERVERS={"weather":{"transport":"http","url":"http://localhost:8000/mcp"},"m
 uv run pytest -q
 ```
 
-## 推荐阅读路径
+## 当前状态
 
-如果只想快速理解项目主线，按这个顺序读：
+当前版本已经完成一条完整的 Agent 业务闭环：
 
-1. [src/agent_core/contracts/tool_spec.py](src/agent_core/contracts/tool_spec.py)
-2. [src/agent_core/contracts/agent_definition.py](src/agent_core/contracts/agent_definition.py)
-3. [src/agent_runtime/langchain/runtime.py](src/agent_runtime/langchain/runtime.py)
-4. [src/agent_runtime/langchain/approval_middleware.py](src/agent_runtime/langchain/approval_middleware.py)
-5. [src/agent_runtime/langchain/event_mapper.py](src/agent_runtime/langchain/event_mapper.py)
-6. [src/app_api/composition/after_sales_agent_factory.py](src/app_api/composition/after_sales_agent_factory.py)
-7. [src/app_api/composition/bootstrap.py](src/app_api/composition/bootstrap.py)
-8. [src/app_api/use_cases/after_sales_agent_use_case.py](src/app_api/use_cases/after_sales_agent_use_case.py)
-9. [src/app_api/projectors/after_sales_run_projector.py](src/app_api/projectors/after_sales_run_projector.py)
-10. [src/after_sales/application/services/after_sales_service.py](src/after_sales/application/services/after_sales_service.py)
-11. [src/app_api/routers/after_sales_runs.py](src/app_api/routers/after_sales_runs.py)
-12. [frontend/src/App.tsx](frontend/src/App.tsx)
+- 本地业务工具与外部 MCP 工具统一接入 `ToolSpec`。
+- Runtime 支持工具调用、审批中断、状态恢复、SSE 事件流和结果归一化。
+- 应用层将运行事件投影为工具调用日志、审批记录和审计日志。
+- HTTP API、CLI、React 前端和测试用例覆盖核心使用路径。
 
-## 面试讲述主线
-
-可以用这条线解释项目：
-
-```text
-我没有直接写一个售后聊天机器人，而是先抽了一层通用 Agent 编排协议。
-
-业务侧通过 ToolSpec 暴露工具，Runtime 只认识 AgentDefinition 和 ToolSpec。
-LangChain/LangGraph 被封装在 runtime 内部，外部只消费 RunEvent 和 RunState。
-
-当模型要调用高风险工具时，approval_policy 会在工具执行前触发中断。
-Runtime 通过 LangGraph checkpoint 保存状态，前端审批后再用同一个 run_id 恢复执行。
-
-执行过程中的工具调用、审批请求、运行失败都会被 projector 投影到业务数据库，
-所以系统不只是能聊天，还能恢复、能审计、能给前端稳定展示。
-```
-
-## 封板说明
-
-当前版本作为“Agent 编排平台 + 售后业务 reference implementation”封板：
-
-- 核心主线已经闭环：工具协议、Runtime、审批恢复、事件流、审计投影、HTTP/CLI、前端。
-- 售后政策检索保留为轻量能力，不继续在本项目硬加 RAG。
-- 后续如果扩展，优先在新领域项目中复用这套编排思想，再补充 RAG、权限、多租户、观测和评测体系。
-
-这个项目的价值不在于售后业务本身，而在于证明一套 Agent 编排骨架可以被迁移到不同业务域。
+后续扩展方向包括：新业务领域接入、RAG/知识库能力、多租户权限、运行观测、评测体系和更细粒度的工具权限控制。
